@@ -13,6 +13,15 @@
    "Clojure keeps the state and the shape of the page close together."
    "The palette stays blunt: yellow paper, black ink, no decorative fog."])
 
+(def operator-names
+  ["Iris" "Morrow" "Vanta" "Rune" "Sable"])
+
+(def district-names
+  ["North Arcade" "Signal Yard" "Ledger Row" "Glass Market" "Switch Quarter"])
+
+(def operator-modes
+  ["scan" "route" "blend" "signal" "hold"])
+
 (def feature-cards
   [{:kicker "STACK"
     :title "Datastar over SSE"
@@ -194,6 +203,10 @@ h1 {
   padding: 1rem;
 }
 
+.demo-panel {
+  margin-top: 1rem;
+}
+
 #manifesto {
   display: grid;
   gap: 0.7rem;
@@ -223,8 +236,79 @@ code, .mono {
   font-size: 0.95em;
 }
 
+.cinema-grid {
+  display: grid;
+  grid-template-columns: 1.1fr 0.9fr;
+  gap: 0.85rem;
+  margin-top: 0.8rem;
+}
+
+.cinema-stack {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.cinema-card {
+  border: 2px solid rgba(18, 18, 18, 0.9);
+  padding: 0.8rem;
+  background: rgba(255, 248, 205, 0.72);
+}
+
+.cinema-metric {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.6rem;
+  align-items: baseline;
+  font-family: Avenir Next Condensed, Franklin Gothic Medium, Arial Narrow, sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.cinema-metric strong {
+  font-size: 1.8rem;
+  line-height: 1;
+}
+
+.cinema-bar {
+  margin-top: 0.55rem;
+  height: 1rem;
+  border: 2px solid var(--edge);
+  background: rgba(18, 18, 18, 0.08);
+}
+
+.cinema-bar-fill {
+  height: 100%;
+  background: var(--ink);
+}
+
+.cinema-row, .cinema-log-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  border-top: 2px solid rgba(18, 18, 18, 0.18);
+  padding-top: 0.45rem;
+  margin-top: 0.45rem;
+}
+
+.cinema-row:first-child, .cinema-log-line:first-child {
+  border-top: 0;
+  padding-top: 0;
+  margin-top: 0;
+}
+
+.cinema-log-line {
+  display: block;
+}
+
+.cinema-edn {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: 0.86rem/1.45 Berkeley Mono, JetBrains Mono, SFMono-Regular, monospace;
+}
+
 @media (max-width: 840px) {
-  .hero, .stream-section, .features, .footer-grid {
+  .hero, .stream-section, .features, .footer-grid, .cinema-grid {
     grid-template-columns: 1fr;
   }
 
@@ -249,7 +333,7 @@ code, .mono {
       [:title "Yaw"]
       [:style styles]
       [:script {:type "module"
-                :src "https://cdn.jsdelivr.net/gh/starfederation/[email protected]/bundles/datastar.js"}]]
+                :src "https://cdn.jsdelivr.net/gh/starfederation/datastar@1.0.2/bundles/datastar.js"}]]
      [:body
       [:main.page
        [:header.masthead
@@ -266,6 +350,10 @@ code, .mono {
            {:type "button"
             :data-on:click "@get('/streams/manifesto')"}
            "Stream manifesto"]
+          [:button.button.alt
+           {:type "button"
+            :data-on:click "@get('/streams/state-cinema')"}
+           "Run state cinema"]
           [:button.button.alt
            {:type "button"
             :data-on:click "@get('/fragments/stack')"}
@@ -308,7 +396,12 @@ code, .mono {
         [:div.footer-box
          [:div.eyebrow "Where Datastar fits"]
          [:p "Buttons are declarative. The backend returns either HTML fragments or an event stream, and Datastar handles the DOM patching."]
-         [:p "No client-side router, no hydration boundary, no framework boot step."]]]]]])))
+         [:p "No client-side router, no hydration boundary, no framework boot step."]]]
+       [:section.demo-panel
+        [:aside.footer-box {:id "state-cinema"}
+         [:div.eyebrow "State Cinema"]
+         [:p "Run the simulation to watch one immutable server state produce a whole dashboard: ranked operators, pulse meter, dispatch log, and an EDN snapshot."]
+         [:p.mono "@get('/streams/state-cinema')"]]]]]])))
 
 (defn home [_]
   (-> (layout)
@@ -334,25 +427,139 @@ code, .mono {
      " "
      text])))
 
+(defn manifesto-fragment [lines]
+  (str
+   (h/html
+    [:div#manifesto
+     (for [[idx text] (map-indexed vector lines)]
+       [:div.line {:id (str "line-" idx) :key (str "line-" idx)}
+        [:span.mono (format "%02d" (inc idx))]
+        " "
+        text])])))
+
+(defn initial-cinema-state []
+  {:tick 0
+   :pulse 18
+   :pressure 11
+   :district "Bootstrap Alley"
+   :agents
+   (vec
+    (map-indexed
+     (fn [idx name]
+       {:name name
+        :score (+ 6 (* idx 2))
+        :mode (nth operator-modes idx)})
+     operator-names))
+   :log
+   ["Channel open."
+    "Awaiting dispatch."
+    "No client store mounted."]})
+
+(defn step-agent [tick idx {:keys [score] :as agent}]
+  (let [delta (- (mod (+ tick (* 2 idx) 5) 7) 3)]
+    (assoc agent
+           :score (max 0 (+ score delta))
+           :mode (nth operator-modes (mod (+ tick idx) (count operator-modes))))))
+
+(defn step-cinema-state [{:keys [tick agents log]}]
+  (let [next-tick (inc tick)
+        next-agents (vec (map-indexed (fn [idx agent] (step-agent next-tick idx agent)) agents))
+        district (nth district-names (mod next-tick (count district-names)))
+        pulse (+ 12 (mod (+ (* next-tick 11) 7) 77))
+        pressure (+ 9 (mod (+ (* next-tick 5) 3) 28))
+        winner (apply max-key :score next-agents)
+        note (str "t+" (format "%02d" next-tick)
+                  " " district
+                  " -> " (:name winner)
+                  " set to " (:mode winner)
+                  " at score " (:score winner) ".")]
+    {:tick next-tick
+     :pulse pulse
+     :pressure pressure
+     :district district
+     :agents next-agents
+     :log (vec (take 4 (cons note log)))}))
+
+(defn cinema-fragment [{:keys [tick pulse pressure district agents log]}]
+  (let [ranked (reverse (sort-by :score agents))
+        state-view {:tick tick
+                    :district district
+                    :pressure pressure
+                    :pulse pulse
+                    :leaders (mapv #(select-keys % [:name :score :mode]) (take 3 ranked))}]
+    (str
+     (h/html
+      [:aside.footer-box {:id "state-cinema"}
+       [:div.eyebrow "State Cinema"]
+       [:p
+        "One button opens a server stream. Clojure evolves the state, Datastar morphs the HTML, and the browser never needs its own reducer or websocket protocol."]
+       [:div.cinema-grid
+        [:div.cinema-stack
+         [:div.cinema-card
+          [:div.cinema-metric
+           [:span "District"]
+           [:strong district]]
+          [:div.muted "Tick " tick " / pressure " pressure]]
+         [:div.cinema-card
+          [:div.cinema-metric
+           [:span "Pulse"]
+           [:strong (str pulse "%")]]
+          [:div.cinema-bar
+           [:div.cinema-bar-fill {:style (str "width:" pulse "%")}]]]
+         [:div.cinema-card
+          [:div.eyebrow "Dispatch Log"]
+          (for [entry log]
+            [:div.cinema-log-line {:key entry} entry])]]
+        [:div.cinema-stack
+         [:div.cinema-card
+          [:div.eyebrow "Operators"]
+          (for [{:keys [name score mode]} ranked]
+            [:div.cinema-row {:key name}
+             [:span (str name " / " mode)]
+             [:strong score]])]
+         [:div.cinema-card
+          [:div.eyebrow "EDN Snapshot"]
+          [:pre.cinema-edn (pr-str state-view)]]]]]))))
+
 (defn manifesto-stream [request]
   (->sse-response
    request
-   {on-open
+   (hash-map
+    on-open
     (fn [sse]
       (d*/with-open-sse sse
         (d*/patch-elements!
          sse
-         (str
-          (h/html
-           [:div#manifesto
-            [:div.line "Transmission opened. The server is sending fragments..."]])))
-        (doseq [[idx line] (map-indexed vector manifesto-lines)]
+         (manifesto-fragment ["Transmission opened. The server is sending fragments..."]))
+        (doseq [idx (range (count manifesto-lines))]
           (Thread/sleep 450)
-          (d*/patch-elements! sse (line-fragment idx line)))))}))
+          (d*/patch-elements!
+           sse
+           (manifesto-fragment (take (inc idx) manifesto-lines)))))))))
+
+(defn state-cinema-stream [request]
+  (->sse-response
+   request
+   (hash-map
+    on-open
+    (fn [sse]
+      (d*/with-open-sse sse
+        (loop [state (initial-cinema-state)]
+          (d*/patch-elements! sse (cinema-fragment state))
+          (when (< (:tick state) 11)
+            (Thread/sleep 325)
+            (recur (step-cinema-state state)))))))))
+
+(defn favicon [_]
+  {:status 204
+   :headers {"content-type" "image/x-icon"}
+   :body ""})
 
 (def routes
   [["/" {:get home}]
+   ["/favicon.ico" {:get favicon}]
    ["/fragments/stack" {:get stack-fragment}]
+   ["/streams/state-cinema" {:get state-cinema-stream}]
    ["/streams/manifesto" {:get manifesto-stream}]])
 
 (def app
