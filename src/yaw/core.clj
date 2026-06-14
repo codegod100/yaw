@@ -1,7 +1,8 @@
 (ns yaw.core
   (:import
-   (java.net URI)
+   (java.net URI URLDecoder)
    (java.net.http HttpClient HttpRequest HttpResponse$BodyHandlers WebSocket WebSocket$Listener)
+   (java.nio.charset StandardCharsets)
    (java.util.concurrent CompletableFuture LinkedBlockingQueue TimeUnit))
   (:require
    [cheshire.core :as json]
@@ -9,7 +10,6 @@
    [hiccup2.core :as h]
    [org.httpkit.server :as http-kit]
    [reitit.ring :as ring]
-   [ring.util.codec :as codec]
    [ring.util.response :as response]
    [starfederation.datastar.clojure.api.sse :as dsse]
    [starfederation.datastar.clojure.adapter.http-kit :refer [->sse-response on-open]]
@@ -820,9 +820,18 @@ code, .mono {
                     "skeet-panel"
                     [(json/generate-string {:html (skeet-fragment posts status)})]))
 
+(defn query-param [request key]
+  (some->> (:query-string request)
+           (str/split #"&")
+           (keep (fn [part]
+                   (let [[raw-k raw-v] (str/split part #"=" 2)]
+                     (when (= raw-k key)
+                       (URLDecoder/decode (or raw-v "") (.name StandardCharsets/UTF_8))))))
+           first))
+
 (defn request-state [request]
   (try
-    (let [state (some-> request :query-string codec/form-decode (get "state"))]
+    (let [state (query-param request "state")]
       (if (str/blank? state)
         []
         (let [parsed (json/parse-string state true)]
