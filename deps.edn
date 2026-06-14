@@ -4,6 +4,7 @@
   metosin/reitit {:mvn/version "0.8.0"}
   ring/ring-core {:mvn/version "1.15.4"}
   hiccup/hiccup {:mvn/version "2.0.0-RC5"}
+  cheshire/cheshire {:mvn/version "5.13.0"}
   io.github.starfederation/datastar-clojure-http-kit
   {:git/url "https://github.com/starfederation/datastar-clojure.git"
    :git/tag "v1.0.0-RC8"
