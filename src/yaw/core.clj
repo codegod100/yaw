@@ -1,9 +1,17 @@
 (ns yaw.core
+  (:import
+   (java.net URI URLDecoder)
+   (java.net.http HttpClient HttpRequest HttpResponse$BodyHandlers WebSocket WebSocket$Listener)
+   (java.nio.charset StandardCharsets)
+   (java.util.concurrent CompletableFuture LinkedBlockingQueue TimeUnit))
   (:require
+   [cheshire.core :as json]
+   [clojure.string :as str]
    [hiccup2.core :as h]
    [org.httpkit.server :as http-kit]
    [reitit.ring :as ring]
    [ring.util.response :as response]
+   [starfederation.datastar.clojure.api.sse :as dsse]
    [starfederation.datastar.clojure.adapter.http-kit :refer [->sse-response on-open]]
    [starfederation.datastar.clojure.api :as d*]))
 
@@ -32,6 +40,57 @@
    {:kicker "AESTHETIC"
     :title "Black on yellow"
     :body "High-contrast blocks, hard borders, tight spacing, and editorial typography borrowed from tonsky.me's visual attitude."}])
+
+(def skeet-controller-script
+  "
+window.yawSkeets = (function () {
+  let source = null;
+
+  function currentPanel() {
+    return document.getElementById('skeet-feed');
+  }
+
+  function setStatus(text) {
+    const node = document.querySelector('#skeet-feed .skeet-status');
+    if (node) node.textContent = text;
+  }
+
+  function replacePanel(html) {
+    const next = new DOMParser().parseFromString(html, 'text/html').body.firstElementChild;
+    const current = currentPanel();
+    if (current && next) current.replaceWith(next);
+  }
+
+  function stop(text) {
+    if (source) {
+      source.close();
+      source = null;
+    }
+    if (text) setStatus(text);
+  }
+
+  function pause() {
+    stop('Paused. Stream closed. Current posts frozen.');
+  }
+
+  function start() {
+    if (source) return;
+    setStatus('Connecting to Jetstream...');
+    const panel = currentPanel();
+    const state = panel ? (panel.dataset.posts || '[]') : '[]';
+    source = new EventSource('/streams/skeets-browser?state=' + encodeURIComponent(state));
+    source.addEventListener('skeet-panel', function (event) {
+      const payload = JSON.parse(event.data);
+      replacePanel(payload.html);
+    });
+    source.onerror = function () {
+      stop('Disconnected. Press Start to reconnect.');
+    };
+  }
+
+  return { start, pause };
+}());
+")
 
 (def styles
   "
@@ -307,6 +366,72 @@ code, .mono {
   font: 0.86rem/1.45 Berkeley Mono, JetBrains Mono, SFMono-Regular, monospace;
 }
 
+.skeet-list {
+  display: grid;
+  gap: 0.8rem;
+  margin-top: 0.9rem;
+}
+
+.skeet {
+  border-top: 2px solid rgba(18, 18, 18, 0.18);
+  padding-top: 0.75rem;
+}
+
+.skeet:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.skeet-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.8rem;
+  align-items: baseline;
+  font-family: Avenir Next Condensed, Franklin Gothic Medium, Arial Narrow, sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.skeet-text {
+  margin: 0.45rem 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 1rem;
+}
+
+.skeet-images {
+  display: grid;
+  gap: 0.6rem;
+  margin-top: 0.7rem;
+}
+
+.skeet-image {
+  display: block;
+  width: auto;
+  max-width: min(100%, 34rem);
+  max-height: 28rem;
+  border: 2px solid var(--edge);
+  background: rgba(18, 18, 18, 0.08);
+  object-fit: contain;
+}
+
+.skeet-link {
+  display: inline-block;
+  margin-top: 0.55rem;
+  font-family: Avenir Next Condensed, Franklin Gothic Medium, Arial Narrow, sans-serif;
+  font-size: 0.88rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.skeet-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 0.9rem;
+}
+
 @media (max-width: 840px) {
   .hero, .stream-section, .features, .footer-grid, .cinema-grid {
     grid-template-columns: 1fr;
@@ -332,6 +457,7 @@ code, .mono {
       [:meta {:name "viewport" :content "width=device-width, initial-scale=1"}]
       [:title "Yaw"]
       [:style styles]
+      [:script (h/raw skeet-controller-script)]
       [:script {:type "module"
                 :src "https://cdn.jsdelivr.net/gh/starfederation/datastar@1.0.2/bundles/datastar.js"}]]
      [:body
@@ -354,6 +480,10 @@ code, .mono {
            {:type "button"
             :data-on:click "@get('/streams/state-cinema')"}
            "Run state cinema"]
+          [:button.button.alt
+           {:type "button"
+            :onclick "window.yawSkeets.start()"}
+           "Stream skeets"]
           [:button.button.alt
            {:type "button"
             :data-on:click "@get('/fragments/stack')"}
@@ -401,7 +531,12 @@ code, .mono {
         [:aside.footer-box {:id "state-cinema"}
          [:div.eyebrow "State Cinema"]
          [:p "Run the simulation to watch one immutable server state produce a whole dashboard: ranked operators, pulse meter, dispatch log, and an EDN snapshot."]
-         [:p.mono "@get('/streams/state-cinema')"]]]]]])))
+         [:p.mono "@get('/streams/state-cinema')"]]]
+       [:section.demo-panel
+       [:aside.footer-box {:id "skeet-feed"}
+         [:div.eyebrow "Jetstream Skeets"]
+         [:p "This panel listens to Bluesky Jetstream on the server, filters `app.bsky.feed.post`, and pushes fresh posts into the page over SSE."]
+         [:p.mono "window.yawSkeets.start()"]]]]]])))
 
 (defn home [_]
   (-> (layout)
@@ -521,6 +656,289 @@ code, .mono {
           [:div.eyebrow "EDN Snapshot"]
           [:pre.cinema-edn (pr-str state-view)]]]]]))))
 
+(def jetstream-url
+  (or (System/getenv "JETSTREAM_URL")
+      "wss://jetstream2.us-west.bsky.network/subscribe?wantedCollections=app.bsky.feed.post"))
+
+(def skeet-delay-ms
+  (try
+    (Long/parseLong (or (System/getenv "SKEET_DELAY_MS") "1500"))
+    (catch Exception _
+      1500)))
+
+(def bsky-profile-url
+  (or (System/getenv "BSKY_PROFILE_URL")
+      "https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile?actor="))
+
+(def plc-directory-url
+  (or (System/getenv "PLC_DIRECTORY_URL")
+      "https://plc.directory/"))
+
+(def bsky-image-base-url
+  (or (System/getenv "BSKY_IMAGE_BASE_URL")
+      "https://cdn.bsky.app/img/feed_fullsize/plain/"))
+
+(defonce !did-handle-cache (atom {}))
+
+(defn compact-handle [did handle]
+  (cond
+    (and handle (not (str/blank? handle))) handle
+    (and did (> (count did) 18)) (str (subs did 0 18) "...")
+    :else (or did "unknown")))
+
+(defn skeet-url [{:keys [uri handle did]}]
+  (when (and uri (or handle did))
+    (let [[_ _ _ collection rkey] (str/split uri #"/" 5)
+          actor (or handle did)]
+      (when (and (= "app.bsky.feed.post" collection) rkey actor)
+        (str "https://bsky.app/profile/" actor "/post/" rkey)))))
+
+(defn skeet-image-url [did cid]
+  (when (and did cid)
+    (str bsky-image-base-url did "/" cid "@jpeg")))
+
+(defn http-client []
+  (-> (HttpClient/newBuilder)
+      (.build)))
+
+(defn send-json-get [client url]
+  (let [request (-> (HttpRequest/newBuilder (URI/create url))
+                    (.header "accept" "application/json")
+                    (.GET)
+                    (.build))
+        response (.send client request (HttpResponse$BodyHandlers/ofString))]
+    (when (= 200 (.statusCode response))
+      (json/parse-string (.body response) true))))
+
+(defn parse-handle-uri [value]
+  (when (and (string? value) (str/starts-with? value "at://"))
+    (let [handle (subs value 5)]
+      (when-not (str/blank? handle)
+        handle))))
+
+(defn image-embed? [embed]
+  (when (map? embed)
+    (let [embed-type (:$type embed)]
+      (or (= "app.bsky.embed.images" embed-type)
+          (= "app.bsky.embed.images#view" embed-type)
+          (and (= "app.bsky.embed.recordWithMedia" embed-type)
+               (image-embed? (:media embed)))
+          (and (= "app.bsky.embed.recordWithMedia#view" embed-type)
+               (image-embed? (:media embed)))))))
+
+(defn image-items [embed]
+  (when (map? embed)
+    (let [embed-type (:$type embed)]
+      (cond
+        (or (= "app.bsky.embed.images" embed-type)
+            (= "app.bsky.embed.images#view" embed-type))
+        (:images embed)
+
+        (or (= "app.bsky.embed.recordWithMedia" embed-type)
+            (= "app.bsky.embed.recordWithMedia#view" embed-type))
+        (image-items (:media embed))
+
+        :else nil))))
+
+(defn image-cid [image]
+  (or (get-in image [:image :ref :$link])
+      (get-in image [:image :cid])
+      (get-in image [:thumb :ref :$link])
+      (get-in image [:thumb :cid])))
+
+(defn image-alt [image]
+  (or (:alt image) "Bluesky post image"))
+
+(defn fetch-did-handle [client did]
+  (or
+   (some-> (send-json-get client (str bsky-profile-url did))
+           :handle)
+   (some->> (send-json-get client (str plc-directory-url did))
+            :alsoKnownAs
+            (keep parse-handle-uri)
+            first)))
+
+(defn resolve-did-handle [client did]
+  (if (str/blank? did)
+    nil
+    (if-let [cached (find @!did-handle-cache did)]
+      (val cached)
+      (let [handle (fetch-did-handle client did)]
+        (swap! !did-handle-cache assoc did handle)
+        handle))))
+
+(defn skeet-fragment [posts status]
+  (str
+   (h/html
+    [:aside.footer-box {:id "skeet-feed"
+                        :data-posts (json/generate-string posts)}
+     [:div.eyebrow "Jetstream Skeets"]
+     [:p "This panel listens to Bluesky Jetstream on the server, filters `app.bsky.feed.post`, and pushes fresh posts into the page over SSE."]
+     [:p.mono jetstream-url]
+     [:div.skeet-controls
+      [:button.button {:type "button"
+                       :onclick "window.yawSkeets.start()"}
+       "Start"]
+      [:button.button.alt {:type "button"
+                           :onclick "window.yawSkeets.pause()"}
+       "Pause"]]
+     [:p.muted.skeet-status status]
+     [:div.skeet-list
+      (if (seq posts)
+        (for [{:keys [uri handle did text created-at images]} posts]
+          [:article.skeet {:key uri}
+           [:div.skeet-meta
+            [:strong (compact-handle did handle)]
+            [:span.muted (or created-at "live")]]
+           [:p.skeet-text (or text "[no text payload]")]
+           (when (seq images)
+             [:div.skeet-images
+              (for [{:keys [cid alt]} images]
+                [:img.skeet-image {:key cid
+                                   :src (skeet-image-url did cid)
+                                   :alt alt
+                                   :loading "lazy"}])])
+           (when-let [url (skeet-url {:uri uri :handle handle :did did})]
+             [:a.skeet-link {:href url
+                             :target "_blank"
+                             :rel "noreferrer"}
+              "Open post"])])
+        [:div.line "Waiting for Jetstream posts..."])]])))
+
+(defn skeet-live-fragment [_]
+  (-> (skeet-fragment [] (str "Live. Showing image posts with a " skeet-delay-ms "ms delay."))
+      response/response
+      (response/content-type "text/html; charset=utf-8")))
+
+(defn skeet-paused-fragment [_]
+  (-> (skeet-fragment [] "Paused. The EventSource is closed.")
+      response/response
+      (response/content-type "text/html; charset=utf-8")))
+
+(defn send-skeet-panel! [sse posts status]
+  (dsse/send-event! sse
+                    "skeet-panel"
+                    [(json/generate-string {:html (skeet-fragment posts status)})]))
+
+(defn query-param [request key]
+  (some->> (:query-string request)
+           (str/split #"&")
+           (keep (fn [part]
+                   (let [[raw-k raw-v] (str/split part #"=" 2)]
+                     (when (= raw-k key)
+                       (URLDecoder/decode (or raw-v "") (.name StandardCharsets/UTF_8))))))
+           first))
+
+(defn request-state [request]
+  (try
+    (let [state (query-param request "state")]
+      (if (str/blank? state)
+        []
+        (let [parsed (json/parse-string state true)]
+          (if (vector? parsed) parsed []))))
+    (catch Exception _
+      [])))
+
+(defn parse-skeet [payload]
+  (try
+    (let [event (json/parse-string payload true)
+          commit (:commit event)
+          record (:record commit)
+          images (some->> (:embed record)
+                          image-items
+                          (keep (fn [image]
+                                  (when-let [cid (image-cid image)]
+                                    {:cid cid
+                                     :alt (image-alt image)})))
+                          seq
+                          vec)]
+      (when (and (= "commit" (:kind event))
+                 (= "create" (:operation commit))
+                 (= "app.bsky.feed.post" (:collection commit))
+                 (map? record)
+                 (seq images))
+        {:uri (or (:uri event)
+                  (str "at://" (:did event) "/" (:collection commit) "/" (:rkey commit)))
+         :did (:did event)
+         :handle (get-in event [:identity :handle])
+         :text (:text record)
+         :created-at (:createdAt record)
+         :images images}))
+    (catch Exception _
+      nil)))
+
+(defn open-jetstream-feed! [on-post]
+  (let [messages (LinkedBlockingQueue.)
+        errors (LinkedBlockingQueue.)
+        ws-atom (atom nil)
+        client (http-client)
+        listener
+        (reify WebSocket$Listener
+          (onOpen [_ web-socket]
+            (.request web-socket Long/MAX_VALUE)
+            (reset! ws-atom web-socket))
+          (onText [_ web-socket data last?]
+            (.put messages (str data))
+            (.request web-socket 1)
+            (CompletableFuture/completedFuture nil))
+          (onError [_ _ error]
+            (.offer errors error)
+            nil)
+          (onClose [_ _ status-code reason]
+            (.offer errors (ex-info "Jetstream closed" {:status-code status-code
+                                                        :reason reason}))
+            (CompletableFuture/completedFuture nil)))]
+    (-> client
+        (.newWebSocketBuilder)
+        (.buildAsync (URI/create jetstream-url) listener)
+        (.join))
+    {:close (fn []
+              (when-let [ws @ws-atom]
+                (.sendClose ws WebSocket/NORMAL_CLOSURE "bye")
+                nil))
+     :pump! (fn []
+              (loop []
+                (if-let [error (.poll errors)]
+                  (throw error)
+                  (do
+                    (when-let [message (.poll messages 1 TimeUnit/SECONDS)]
+                      (on-post message))
+                    (recur)))))}))
+
+(defn skeet-browser-stream [request]
+  (->sse-response
+   request
+   (hash-map
+    on-open
+    (fn [sse]
+      (d*/with-open-sse sse
+        (let [client (http-client)
+              posts (atom (request-state request))
+              live-status (str "Live. Showing image posts with a " skeet-delay-ms "ms delay.")
+              push! (fn [post]
+                      (when (pos? skeet-delay-ms)
+                        (Thread/sleep skeet-delay-ms))
+                      (swap! posts
+                             (fn [items]
+                               (->> (cons post items)
+                                    (remove nil?)
+                                    (take 8)
+                                    vec)))
+                      (send-skeet-panel! sse @posts live-status))
+              feed (open-jetstream-feed!
+                    (fn [message]
+                      (when-let [post (parse-skeet message)]
+                        (push! (update post :handle #(or % (resolve-did-handle client (:did post))))))))]
+          (try
+            ((:pump! feed))
+            (catch Exception error
+              (push! {:uri (str "status-" (System/currentTimeMillis))
+                      :handle "jetstream status"
+                      :text (str "Stream ended: " (.getMessage error))
+                      :created-at "server note"}))
+            (finally
+              ((:close feed))))))))))
+
 (defn manifesto-stream [request]
   (->sse-response
    request
@@ -559,6 +977,9 @@ code, .mono {
   [["/" {:get home}]
    ["/favicon.ico" {:get favicon}]
    ["/fragments/stack" {:get stack-fragment}]
+   ["/fragments/skeets-live" {:get skeet-live-fragment}]
+   ["/fragments/skeets-paused" {:get skeet-paused-fragment}]
+   ["/streams/skeets-browser" {:get skeet-browser-stream}]
    ["/streams/state-cinema" {:get state-cinema-stream}]
    ["/streams/manifesto" {:get manifesto-stream}]])
 
