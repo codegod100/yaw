@@ -9,6 +9,7 @@
    [hiccup2.core :as h]
    [org.httpkit.server :as http-kit]
    [reitit.ring :as ring]
+   [ring.util.codec :as codec]
    [ring.util.response :as response]
    [starfederation.datastar.clojure.api.sse :as dsse]
    [starfederation.datastar.clojure.adapter.http-kit :refer [->sse-response on-open]]
@@ -75,7 +76,9 @@ window.yawSkeets = (function () {
   function start() {
     if (source) return;
     setStatus('Connecting to Jetstream...');
-    source = new EventSource('/streams/skeets-browser');
+    const panel = currentPanel();
+    const state = panel ? (panel.dataset.posts || '[]') : '[]';
+    source = new EventSource('/streams/skeets-browser?state=' + encodeURIComponent(state));
     source.addEventListener('skeet-panel', function (event) {
       const payload = JSON.parse(event.data);
       replacePanel(payload.html);
@@ -767,7 +770,8 @@ code, .mono {
 (defn skeet-fragment [posts status]
   (str
    (h/html
-    [:aside.footer-box {:id "skeet-feed"}
+    [:aside.footer-box {:id "skeet-feed"
+                        :data-posts (json/generate-string posts)}
      [:div.eyebrow "Jetstream Skeets"]
      [:p "This panel listens to Bluesky Jetstream on the server, filters `app.bsky.feed.post`, and pushes fresh posts into the page over SSE."]
      [:p.mono jetstream-url]
@@ -815,6 +819,16 @@ code, .mono {
   (dsse/send-event! sse
                     "skeet-panel"
                     [(json/generate-string {:html (skeet-fragment posts status)})]))
+
+(defn request-state [request]
+  (try
+    (let [state (some-> request :query-string codec/form-decode (get "state"))]
+      (if (str/blank? state)
+        []
+        (let [parsed (json/parse-string state true)]
+          (if (vector? parsed) parsed []))))
+    (catch Exception _
+      [])))
 
 (defn parse-skeet [payload]
   (try
@@ -890,7 +904,7 @@ code, .mono {
     (fn [sse]
       (d*/with-open-sse sse
         (let [client (http-client)
-              posts (atom [])
+              posts (atom (request-state request))
               live-status (str "Live. Showing image posts with a " skeet-delay-ms "ms delay.")
               push! (fn [post]
                       (when (pos? skeet-delay-ms)
