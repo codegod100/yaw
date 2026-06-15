@@ -1,9 +1,8 @@
 (ns yaw.core
   (:import
-   (java.net URI URLDecoder)
-   (java.net.http HttpClient HttpRequest HttpResponse$BodyHandlers WebSocket WebSocket$Listener)
-   (java.nio.charset StandardCharsets)
-   (java.util.concurrent CompletableFuture LinkedBlockingQueue TimeUnit))
+   (java.net URI)
+   (java.net.http HttpClient HttpRequest HttpResponse$BodyHandlers)
+   (java.time LocalTime))
   (:require
    [cheshire.core :as json]
    [clojure.string :as str]
@@ -15,43 +14,77 @@
    [starfederation.datastar.clojure.adapter.http-kit :refer [->sse-response on-open]]
    [starfederation.datastar.clojure.api :as d*]))
 
-(def manifesto-lines
-  ["Backend-driven UI without SPA ceremony."
-   "Datastar patches the DOM, the server owns the story."
-   "Clojure keeps the state and the shape of the page close together."
-   "The palette stays blunt: yellow paper, black ink, no decorative fog."])
+(def now-lines
+  ["Shipping small web software with Clojure and HTML-first interactions."
+   "Refining local-first workflows instead of adding more cloud ceremony."
+   "Collecting notes on interface writing, product edges, and calm tooling."
+   "Keeping the stack compact enough to understand in one sitting."])
 
-(def operator-names
-  ["Iris" "Morrow" "Vanta" "Rune" "Sable"])
+(def profile-metrics
+  [{:label "Base" :value "US West" :detail "Mostly building from a local dev shell."}
+   {:label "Focus" :value "Web systems" :detail "Product infrastructure, UI composition, and maintainable tooling."}
+   {:label "Stack" :value "Clojure" :detail "Ring, hiccup, Datastar, and plain CSS over a large client build."}])
 
-(def district-names
-  ["North Arcade" "Signal Yard" "Ledger Row" "Glass Market" "Switch Quarter"])
+(def project-cards
+  [{:kicker "01"
+    :title "Personal Publishing"
+    :body "Essays, working notes, and experiments published from a codebase small enough to revise quickly."}
+   {:kicker "02"
+    :title "Product Prototypes"
+    :body "Fast server-rendered prototypes for testing interaction ideas before committing to larger architecture."}
+   {:kicker "03"
+    :title "Developer Tooling"
+    :body "Scripts, environments, and internal interfaces that reduce friction instead of layering abstraction."}])
 
-(def operator-modes
-  ["scan" "route" "blend" "signal" "hold"])
+(def note-items
+  [{:title "Writing software that stays legible"
+    :body "Keeping the page, the routes, and the state transitions close enough that maintenance feels obvious."}
+   {:title "HTML over indirection"
+    :body "Choosing server-rendered fragments and direct links unless complexity clearly justifies something heavier."}
+   {:title "Design with a point of view"
+    :body "Using sharp type, hard borders, and deliberate contrast so the site feels authored instead of templated."}])
 
-(def feature-cards
-  [{:kicker "STACK"
-    :title "Datastar over SSE"
-    :body "Interactions stream as HTML fragments from Clojure instead of hydrating a client framework."}
-   {:kicker "TOOLING"
-    :title "devenv first"
-    :body "The shell provides JDK 21, Clojure CLI, a REPL entrypoint, and a single dev command."}
-   {:kicker "AESTHETIC"
-    :title "Black on yellow"
-    :body "High-contrast blocks, hard borders, tight spacing, and editorial typography borrowed from tonsky.me's visual attitude."}])
+(defn read-dotenv []
+  (let [path ".env"]
+    (when (.exists (java.io.File. path))
+      (into {}
+            (keep (fn [line]
+                    (let [line (str/trim line)]
+                      (when (and (not (str/blank? line))
+                                 (not (str/starts-with? line "#"))
+                                 (str/includes? line "="))
+                        (let [[k v] (str/split line #"=" 2)]
+                          [(str/trim k) (str/trim v)])))))
+            (str/split-lines (slurp path))))))
 
-(def skeet-controller-script
-  "
-window.yawSkeets = (function () {
+(defonce !dotenv (delay (read-dotenv)))
+
+(defn env [k]
+  (or (System/getenv k)
+      (get @!dotenv k)))
+
+(def at-handle
+  (env "AT_HANDLE"))
+
+(def bsky-profile-url
+  "https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile?actor=")
+
+(def bsky-feed-url
+  "https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed?actor=")
+
+(defonce !bsky-cache (atom {:handle nil :fetched-at 0 :value nil}))
+(def bsky-cache-ms 300000)
+
+(def now-controller-script "
+window.yawNow = (function () {
   let source = null;
 
   function currentPanel() {
-    return document.getElementById('skeet-feed');
+    return document.getElementById('now-panel');
   }
 
   function setStatus(text) {
-    const node = document.querySelector('#skeet-feed .skeet-status');
+    const node = document.querySelector('#now-panel .now-status');
     if (node) node.textContent = text;
   }
 
@@ -69,46 +102,40 @@ window.yawSkeets = (function () {
     if (text) setStatus(text);
   }
 
-  function pause() {
-    stop('Paused. Stream closed. Current posts frozen.');
-  }
-
-  function start() {
-    if (source) return;
-    setStatus('Connecting to Jetstream...');
-    const panel = currentPanel();
-    const state = panel ? (panel.dataset.posts || '[]') : '[]';
-    source = new EventSource('/streams/skeets-browser?state=' + encodeURIComponent(state));
-    source.addEventListener('skeet-panel', function (event) {
+  function refresh() {
+    stop('Refreshing...');
+    source = new EventSource('/streams/now');
+    source.addEventListener('now-panel', function (event) {
       const payload = JSON.parse(event.data);
       replacePanel(payload.html);
+      stop('Updated just now.');
     });
     source.onerror = function () {
-      stop('Disconnected. Press Start to reconnect.');
+      stop('Refresh interrupted. Try again.');
     };
   }
 
-  return { start, pause };
+  return { refresh };
 }());
 ")
 
-(def styles
-  "
+(def styles "
 :root {
   --paper: #f3d33b;
   --ink: #121212;
   --edge: #121212;
   --muted: rgba(18, 18, 18, 0.68);
-  --panel: rgba(255, 245, 177, 0.72);
+  --panel: rgba(255, 244, 160, 0.82);
+  --accent: #121212;
 }
 
 * { box-sizing: border-box; }
 
 html {
-  background: var(--paper);
   color: var(--ink);
   font-family: Iowan Old Style, Palatino Linotype, Book Antiqua, URW Palladio L, serif;
   line-height: 1.35;
+  scroll-behavior: smooth;
 }
 
 body {
@@ -126,9 +153,9 @@ a {
 }
 
 .page {
-  width: min(1080px, calc(100vw - 2rem));
+  width: min(1120px, calc(100vw - 2rem));
   margin: 0 auto;
-  padding: 1.2rem 0 3rem;
+  padding: 1.2rem 0 3.5rem;
 }
 
 .masthead {
@@ -138,21 +165,36 @@ a {
   align-items: baseline;
   border-bottom: 3px solid var(--edge);
   padding-bottom: 0.75rem;
-  margin-bottom: 1.4rem;
+  margin-bottom: 1.6rem;
   font-family: Avenir Next Condensed, Franklin Gothic Medium, Arial Narrow, sans-serif;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   font-size: 0.9rem;
 }
 
+.masthead nav {
+  display: flex;
+  gap: 0.9rem;
+  flex-wrap: wrap;
+}
+
+.masthead a {
+  text-decoration: none;
+}
+
+.masthead a[aria-current=\"page\"] {
+  border-bottom: 3px solid var(--edge);
+  padding-bottom: 0.15rem;
+}
+
 .hero {
   display: grid;
-  grid-template-columns: minmax(0, 1.3fr) minmax(18rem, 0.9fr);
+  grid-template-columns: minmax(0, 1.35fr) minmax(19rem, 0.85fr);
   gap: 1.2rem;
   align-items: start;
 }
 
-.hero-card, .aside-card, .feature, .footer-box, .stream-box {
+.hero-card, .aside-card, .feature, .footer-box, .stream-box, .quote-box {
   border: 3px solid var(--edge);
   background: var(--panel);
   box-shadow: 0.45rem 0.45rem 0 0 var(--edge);
@@ -168,12 +210,13 @@ a {
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+  color: var(--accent);
 }
 
 h1 {
   margin: 0.35rem 0 0.8rem;
-  font-size: clamp(2.8rem, 9vw, 6.8rem);
-  line-height: 0.92;
+  font-size: clamp(2.8rem, 8vw, 6.2rem);
+  line-height: 0.94;
   letter-spacing: -0.05em;
 }
 
@@ -203,7 +246,7 @@ h1 {
 }
 
 .button.alt {
-  background: transparent;
+  background: rgba(255, 244, 160, 0.35);
   color: var(--ink);
 }
 
@@ -225,7 +268,7 @@ h1 {
 
 .metric-value {
   font-family: Avenir Next Condensed, Franklin Gothic Medium, Arial Narrow, sans-serif;
-  font-size: 2rem;
+  font-size: 1.7rem;
   font-weight: 800;
   line-height: 1;
 }
@@ -251,7 +294,11 @@ h1 {
   line-height: 1;
 }
 
-.stream-section {
+.feature, .footer-box, .stream-box, .aside-card {
+  backdrop-filter: blur(0);
+}
+
+.stream-section, .notes-grid, .footer-grid {
   margin-top: 1.6rem;
   display: grid;
   grid-template-columns: minmax(0, 1.15fr) minmax(18rem, 0.85fr);
@@ -262,14 +309,10 @@ h1 {
   padding: 1rem;
 }
 
-.demo-panel {
-  margin-top: 1rem;
-}
-
-#manifesto {
+#now-items {
   display: grid;
   gap: 0.7rem;
-  min-height: 15rem;
+  min-height: 12rem;
 }
 
 .line {
@@ -283,157 +326,109 @@ h1 {
   padding-top: 0;
 }
 
-.footer-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 1rem;
-  margin-top: 1rem;
-}
-
 code, .mono {
   font-family: Berkeley Mono, JetBrains Mono, SFMono-Regular, monospace;
   font-size: 0.95em;
 }
 
-.cinema-grid {
-  display: grid;
-  grid-template-columns: 1.1fr 0.9fr;
-  gap: 0.85rem;
-  margin-top: 0.8rem;
-}
-
-.cinema-stack {
-  display: grid;
-  gap: 0.85rem;
-}
-
-.cinema-card {
-  border: 2px solid rgba(18, 18, 18, 0.9);
-  padding: 0.8rem;
-  background: rgba(255, 248, 205, 0.72);
-}
-
-.cinema-metric {
-  display: flex;
-  justify-content: space-between;
-  gap: 0.6rem;
-  align-items: baseline;
-  font-family: Avenir Next Condensed, Franklin Gothic Medium, Arial Narrow, sans-serif;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
-.cinema-metric strong {
-  font-size: 1.8rem;
-  line-height: 1;
-}
-
-.cinema-bar {
-  margin-top: 0.55rem;
-  height: 1rem;
-  border: 2px solid var(--edge);
-  background: rgba(18, 18, 18, 0.08);
-}
-
-.cinema-bar-fill {
-  height: 100%;
-  background: var(--ink);
-}
-
-.cinema-row, .cinema-log-line {
-  display: flex;
-  justify-content: space-between;
-  gap: 0.75rem;
-  border-top: 2px solid rgba(18, 18, 18, 0.18);
-  padding-top: 0.45rem;
-  margin-top: 0.45rem;
-}
-
-.cinema-row:first-child, .cinema-log-line:first-child {
-  border-top: 0;
-  padding-top: 0;
-  margin-top: 0;
-}
-
-.cinema-log-line {
-  display: block;
-}
-
-.cinema-edn {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font: 0.86rem/1.45 Berkeley Mono, JetBrains Mono, SFMono-Regular, monospace;
-}
-
-.skeet-list {
+.notes-list {
   display: grid;
   gap: 0.8rem;
-  margin-top: 0.9rem;
+  margin-top: 0.5rem;
 }
 
-.skeet {
+.bsky-list {
+  display: grid;
+  gap: 0.9rem;
+  margin-top: 0.6rem;
+}
+
+.bsky-post {
   border-top: 2px solid rgba(18, 18, 18, 0.18);
   padding-top: 0.75rem;
 }
 
-.skeet:first-child {
+.bsky-post:first-child {
   border-top: 0;
   padding-top: 0;
 }
 
-.skeet-meta {
+.bsky-meta {
   display: flex;
   justify-content: space-between;
-  gap: 0.8rem;
+  gap: 0.75rem;
   align-items: baseline;
   font-family: Avenir Next Condensed, Franklin Gothic Medium, Arial Narrow, sans-serif;
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
 
-.skeet-text {
-  margin: 0.45rem 0 0;
+.bsky-post p {
+  margin: 0.35rem 0 0;
   white-space: pre-wrap;
-  word-break: break-word;
-  font-size: 1rem;
 }
 
-.skeet-images {
-  display: grid;
-  gap: 0.6rem;
-  margin-top: 0.7rem;
+.note-item {
+  border-top: 2px solid rgba(18, 18, 18, 0.18);
+  padding-top: 0.75rem;
 }
 
-.skeet-image {
-  display: block;
-  width: auto;
-  max-width: min(100%, 34rem);
-  max-height: 28rem;
-  border: 2px solid var(--edge);
-  background: rgba(18, 18, 18, 0.08);
-  object-fit: contain;
+.note-item:first-child {
+  border-top: 0;
+  padding-top: 0;
 }
 
-.skeet-link {
-  display: inline-block;
-  margin-top: 0.55rem;
+.note-item h3 {
+  margin: 0 0 0.25rem;
+  font-size: 1.25rem;
+}
+
+.quote-box {
+  padding: 1rem;
+  margin-top: 1rem;
+  background: var(--ink);
+  color: var(--paper);
+  box-shadow: none;
+}
+
+.quote-box blockquote {
+  margin: 0;
+  font-size: 1.3rem;
+  line-height: 1.25;
+}
+
+.quote-box p {
+  margin: 0.6rem 0 0;
+  color: rgba(243, 211, 59, 0.82);
+}
+
+.footer-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.notes-grid {
+  grid-template-columns: minmax(0, 1fr) minmax(20rem, 0.9fr);
+}
+
+.section-title {
+  margin: 0 0 0.35rem;
+  font-size: 2rem;
+  line-height: 0.98;
+}
+
+.section-copy {
+  margin: 0;
+  max-width: 44rem;
+}
+
+#now-panel .now-status {
   font-family: Avenir Next Condensed, Franklin Gothic Medium, Arial Narrow, sans-serif;
-  font-size: 0.88rem;
-  font-weight: 700;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 
-.skeet-controls {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-  margin-top: 0.9rem;
-}
-
 @media (max-width: 840px) {
-  .hero, .stream-section, .features, .footer-grid, .cinema-grid {
+  .hero, .stream-section, .features, .footer-grid, .notes-grid {
     grid-template-columns: 1fr;
   }
 
@@ -447,255 +442,87 @@ code, .mono {
 }
 ")
 
-(defn layout []
-  (str
-   "<!doctype html>"
-   (h/html
-    [:html {:lang "en"}
-     [:head
-      [:meta {:charset "utf-8"}]
-      [:meta {:name "viewport" :content "width=device-width, initial-scale=1"}]
-      [:title "Yaw"]
-      [:style styles]
-      [:script (h/raw skeet-controller-script)]
-      [:script {:type "module"
-                :src "https://cdn.jsdelivr.net/gh/starfederation/datastar@1.0.2/bundles/datastar.js"}]]
-     [:body
-      [:main.page
-       [:header.masthead
-        [:div "Yaw / Datastar / Clojure"]
-        [:div.mono "black-on-yellow edition"]]
-       [:section.hero
-        [:article.hero-card
-         [:div.eyebrow "No SPA. No Build Graph."]
-         [:h1 "Clojure, cut hard."]
-         [:p.lede
-          "A Datastar site with a deliberately stark editorial surface: black ink on yellow stock, server-rendered HTML, and SSE-driven updates from a tiny Clojure backend."]
-         [:div.cta-row
-          [:button.button
-           {:type "button"
-            :data-on:click "@get('/streams/manifesto')"}
-           "Stream manifesto"]
-          [:button.button.alt
-           {:type "button"
-            :data-on:click "@get('/streams/state-cinema')"}
-           "Run state cinema"]
-          [:button.button.alt
-           {:type "button"
-            :onclick "window.yawSkeets.start()"}
-           "Stream skeets"]
-          [:button.button.alt
-           {:type "button"
-            :data-on:click "@get('/fragments/stack')"}
-           "Explain stack"]]]
-        [:aside.aside-card
-         [:div.eyebrow "Readout"]
-         [:div.metric
-          [:div.metric-label "Runtime"]
-          [:div.metric-value "http-kit"]
-          [:div.muted "Ring handler plus Datastar SSE adapter"]]
-         [:div.metric
-          [:div.metric-label "Frontend"]
-          [:div.metric-value "11.76 KiB"]
-          [:div.muted "Datastar describes itself as a single lightweight file"]]
-         [:div.metric
-          [:div.metric-label "Mood"]
-          [:div.metric-value "Yellow / Black"]
-          [:div.muted "A nod to tonsky.me without cloning its layout"]]]]
-       [:section.features
-        (for [{:keys [kicker title body]} feature-cards]
-          [:article.feature {:key title}
-           [:div.kicker kicker]
-           [:h2 title]
-           [:p body]])]
-       [:section.stream-section
-        [:article.stream-box
-         [:div.eyebrow "Server Stream"]
-         [:div#manifesto
-          [:div.line "Press “Stream manifesto” to let the backend patch lines into this column one by one."]]]
-        [:aside.footer-box {:id "stack-note"}
-         [:div.eyebrow "Stack Note"]
-         [:p
-          "Press “Explain stack” for a plain HTML patch response. Datastar will morph it in-place by element id."]
-         [:p.mono "devenv shell -- clojure -M -m yaw.core"]]]
-       [:section.footer-grid
-        [:div.footer-box
-         [:div.eyebrow "Why this shape"]
-         [:p "The page is intentionally strict: oversized headline, dense panels, hard borders, and almost no decorative color beyond the paper tone."]
-         [:p "That keeps the site aligned with the reference aesthetic while still being its own composition."]]
-        [:div.footer-box
-         [:div.eyebrow "Where Datastar fits"]
-         [:p "Buttons are declarative. The backend returns either HTML fragments or an event stream, and Datastar handles the DOM patching."]
-         [:p "No client-side router, no hydration boundary, no framework boot step."]]]
-       [:section.demo-panel
-        [:aside.footer-box {:id "state-cinema"}
-         [:div.eyebrow "State Cinema"]
-         [:p "Run the simulation to watch one immutable server state produce a whole dashboard: ranked operators, pulse meter, dispatch log, and an EDN snapshot."]
-         [:p.mono "@get('/streams/state-cinema')"]]]
-       [:section.demo-panel
-       [:aside.footer-box {:id "skeet-feed"}
-         [:div.eyebrow "Jetstream Skeets"]
-         [:p "This panel listens to Bluesky Jetstream on the server, filters `app.bsky.feed.post`, and pushes fresh posts into the page over SSE."]
-         [:p.mono "window.yawSkeets.start()"]]]]]])))
+(defn nav-link [active href label]
+  [:a {:href href
+       :aria-current (when (= active label) "page")}
+   label])
 
-(defn home [_]
-  (-> (layout)
-      response/response
-      (response/content-type "text/html; charset=utf-8")))
+(defn hero-section []
+  [:section.hero
+   [:article.hero-card
+    [:div.eyebrow "Personal Website"]
+    [:h1 "Building quiet software with a strong point of view."]
+    [:p.lede
+     "I work on web products, developer systems, and interfaces that stay legible under real maintenance. This site is a compact home for projects, notes, and current work."]
+    [:div.cta-row
+     [:a.button {:href "/contact"} "Get in touch"]
+     [:button.button.alt
+      {:type "button"
+       :onclick "window.yawNow.refresh()"}
+      "Refresh now"]]
+    [:div.quote-box
+     [:div.eyebrow "Working Principle"]
+     [:blockquote "Fewer moving parts, stronger defaults, sharper writing."]
+     [:p.muted "The site stays intentionally small so changing it never feels expensive."]]]
+   [:aside.aside-card
+    [:div.eyebrow "At a glance"]
+    (for [{:keys [label value detail]} profile-metrics]
+      [:div.metric {:key label}
+       [:div.metric-label label]
+       [:div.metric-value value]
+       [:div.muted detail]])]])
 
-(defn stack-fragment [_]
-  (-> (str
-       (h/html
-        [:aside.footer-box {:id "stack-note"}
-         [:div.eyebrow "Stack Note"]
-         [:p "The app uses `http-kit` for the web server, `reitit` for routes, `hiccup` for markup, and the official Datastar Clojure adapter for SSE responses."]
-         [:p "The dependency is pinned to the `datastar-clojure` repository commit behind `v1.0.0-RC8`, with `:deps/root` set to `libraries/sdk-http-kit`."]
-         [:p.mono "Git ref: aed8ce2"]]))
-      response/response
-      (response/content-type "text/html; charset=utf-8")))
+(defn work-section []
+  [:section.features
+   (for [{:keys [kicker title body]} project-cards]
+     [:article.feature {:key title}
+      [:div.kicker kicker]
+      [:h2 title]
+      [:p body]])])
 
-(defn line-fragment [idx text]
-  (str
-   (h/html
-    [:div.line {:id (str "line-" idx)}
-     [:span.mono (format "%02d" (inc idx))]
-     " "
-     text])))
+(defn now-section []
+  [:section.stream-section
+   [:article.stream-box
+    [:div.eyebrow "Now"]
+    [:div#now-panel
+     [:div#now-items
+      [:div.line "Shipping software with low ceremony and strong editorial structure."]
+      [:div.line "Documenting ideas in public as working notes instead of polished launch copy."]]
+     [:p.muted.now-status "Press “Refresh now” to pull a live update from the server."]]]
+   [:div.footer-box
+    [:div.eyebrow "Approach"]
+    [:h2.section-title "Built to be edited, not admired from a distance."]
+    [:p.section-copy
+     "I prefer systems where content, behavior, and deployment stay close together. That usually means server-rendered pages, direct interfaces, and a bias toward tools that are easy to inspect."]]])
 
-(defn manifesto-fragment [lines]
-  (str
-   (h/html
-    [:div#manifesto
-     (for [[idx text] (map-indexed vector lines)]
-       [:div.line {:id (str "line-" idx) :key (str "line-" idx)}
-        [:span.mono (format "%02d" (inc idx))]
-        " "
-        text])])))
+(defn notes-section []
+  [:section.notes-grid
+   [:article.footer-box
+    [:div.eyebrow "Notes"]
+    [:h2.section-title "Ongoing themes"]
+    [:div.notes-list
+     (for [{:keys [title body]} note-items]
+       [:article.note-item {:key title}
+        [:h3 title]
+        [:p body]])]]
+   [:div.footer-box
+    [:div.eyebrow "Source"]
+    [:p "This site runs as a single Clojure service with server-rendered HTML and a small Datastar hook for lightweight updates."]
+    [:p.mono "devenv shell -- clojure -M -m yaw.core"]]])
 
-(defn initial-cinema-state []
-  {:tick 0
-   :pulse 18
-   :pressure 11
-   :district "Bootstrap Alley"
-   :agents
-   (vec
-    (map-indexed
-     (fn [idx name]
-       {:name name
-        :score (+ 6 (* idx 2))
-        :mode (nth operator-modes idx)})
-     operator-names))
-   :log
-   ["Channel open."
-    "Awaiting dispatch."
-    "No client store mounted."]})
-
-(defn step-agent [tick idx {:keys [score] :as agent}]
-  (let [delta (- (mod (+ tick (* 2 idx) 5) 7) 3)]
-    (assoc agent
-           :score (max 0 (+ score delta))
-           :mode (nth operator-modes (mod (+ tick idx) (count operator-modes))))))
-
-(defn step-cinema-state [{:keys [tick agents log]}]
-  (let [next-tick (inc tick)
-        next-agents (vec (map-indexed (fn [idx agent] (step-agent next-tick idx agent)) agents))
-        district (nth district-names (mod next-tick (count district-names)))
-        pulse (+ 12 (mod (+ (* next-tick 11) 7) 77))
-        pressure (+ 9 (mod (+ (* next-tick 5) 3) 28))
-        winner (apply max-key :score next-agents)
-        note (str "t+" (format "%02d" next-tick)
-                  " " district
-                  " -> " (:name winner)
-                  " set to " (:mode winner)
-                  " at score " (:score winner) ".")]
-    {:tick next-tick
-     :pulse pulse
-     :pressure pressure
-     :district district
-     :agents next-agents
-     :log (vec (take 4 (cons note log)))}))
-
-(defn cinema-fragment [{:keys [tick pulse pressure district agents log]}]
-  (let [ranked (reverse (sort-by :score agents))
-        state-view {:tick tick
-                    :district district
-                    :pressure pressure
-                    :pulse pulse
-                    :leaders (mapv #(select-keys % [:name :score :mode]) (take 3 ranked))}]
-    (str
-     (h/html
-      [:aside.footer-box {:id "state-cinema"}
-       [:div.eyebrow "State Cinema"]
-       [:p
-        "One button opens a server stream. Clojure evolves the state, Datastar morphs the HTML, and the browser never needs its own reducer or websocket protocol."]
-       [:div.cinema-grid
-        [:div.cinema-stack
-         [:div.cinema-card
-          [:div.cinema-metric
-           [:span "District"]
-           [:strong district]]
-          [:div.muted "Tick " tick " / pressure " pressure]]
-         [:div.cinema-card
-          [:div.cinema-metric
-           [:span "Pulse"]
-           [:strong (str pulse "%")]]
-          [:div.cinema-bar
-           [:div.cinema-bar-fill {:style (str "width:" pulse "%")}]]]
-         [:div.cinema-card
-          [:div.eyebrow "Dispatch Log"]
-          (for [entry log]
-            [:div.cinema-log-line {:key entry} entry])]]
-        [:div.cinema-stack
-         [:div.cinema-card
-          [:div.eyebrow "Operators"]
-          (for [{:keys [name score mode]} ranked]
-            [:div.cinema-row {:key name}
-             [:span (str name " / " mode)]
-             [:strong score]])]
-         [:div.cinema-card
-          [:div.eyebrow "EDN Snapshot"]
-          [:pre.cinema-edn (pr-str state-view)]]]]]))))
-
-(def jetstream-url
-  (or (System/getenv "JETSTREAM_URL")
-      "wss://jetstream2.us-west.bsky.network/subscribe?wantedCollections=app.bsky.feed.post"))
-
-(def skeet-delay-ms
-  (try
-    (Long/parseLong (or (System/getenv "SKEET_DELAY_MS") "1500"))
-    (catch Exception _
-      1500)))
-
-(def bsky-profile-url
-  (or (System/getenv "BSKY_PROFILE_URL")
-      "https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile?actor="))
-
-(def plc-directory-url
-  (or (System/getenv "PLC_DIRECTORY_URL")
-      "https://plc.directory/"))
-
-(def bsky-image-base-url
-  (or (System/getenv "BSKY_IMAGE_BASE_URL")
-      "https://cdn.bsky.app/img/feed_fullsize/plain/"))
-
-(defonce !did-handle-cache (atom {}))
-
-(defn compact-handle [did handle]
-  (cond
-    (and handle (not (str/blank? handle))) handle
-    (and did (> (count did) 18)) (str (subs did 0 18) "...")
-    :else (or did "unknown")))
-
-(defn skeet-url [{:keys [uri handle did]}]
-  (when (and uri (or handle did))
-    (let [[_ _ _ collection rkey] (str/split uri #"/" 5)
-          actor (or handle did)]
-      (when (and (= "app.bsky.feed.post" collection) rkey actor)
-        (str "https://bsky.app/profile/" actor "/post/" rkey)))))
-
-(defn skeet-image-url [did cid]
-  (when (and did cid)
-    (str bsky-image-base-url did "/" cid "@jpeg")))
+(defn contact-section []
+  [:section.notes-grid
+   [:aside.footer-box
+    [:div.eyebrow "Contact"]
+    [:h2.section-title "Available for careful product and engineering work."]
+    [:p "If you need help shaping a web product, simplifying a delivery path, or tightening the feel of an interface, reach out."]
+    [:p.mono "nandi@localhost"]
+    [:p.mono "github.com/nandi"]
+    [:p.muted "Replace these placeholders with your real contact points."]]
+   [:div.footer-box
+    [:div.eyebrow "Intent"]
+   [:p "The goal is a personal website that feels authored: compact, opinionated, and easy to keep current over time."]
+    [:p "No feed clutter, no generic portfolio chrome, no split between content and implementation."]]])
 
 (defn http-client []
   (-> (HttpClient/newBuilder)
@@ -710,263 +537,166 @@ code, .mono {
     (when (= 200 (.statusCode response))
       (json/parse-string (.body response) true))))
 
-(defn parse-handle-uri [value]
-  (when (and (string? value) (str/starts-with? value "at://"))
-    (let [handle (subs value 5)]
-      (when-not (str/blank? handle)
-        handle))))
+(defn bsky-post-url [handle uri]
+  (when (and handle uri)
+    (let [[_ _ _ collection rkey] (str/split uri #"/" 5)]
+      (when (and (= "app.bsky.feed.post" collection) rkey)
+        (str "https://bsky.app/profile/" handle "/post/" rkey)))))
 
-(defn image-embed? [embed]
-  (when (map? embed)
-    (let [embed-type (:$type embed)]
-      (or (= "app.bsky.embed.images" embed-type)
-          (= "app.bsky.embed.images#view" embed-type)
-          (and (= "app.bsky.embed.recordWithMedia" embed-type)
-               (image-embed? (:media embed)))
-          (and (= "app.bsky.embed.recordWithMedia#view" embed-type)
-               (image-embed? (:media embed)))))))
+(defn trim-post-text [text]
+  (let [text (or text "")]
+    (if (> (count text) 280)
+      (str (subs text 0 277) "...")
+      text)))
 
-(defn image-items [embed]
-  (when (map? embed)
-    (let [embed-type (:$type embed)]
+(defn fetch-bsky-posts []
+  (cond
+    (str/blank? at-handle)
+    {:handle nil :posts [] :error "Set AT_HANDLE in .env to show recent Bluesky posts."}
+
+    :else
+    (let [{:keys [handle fetched-at value]} @!bsky-cache
+          now (System/currentTimeMillis)]
+      (if (and (= handle at-handle)
+               value
+               (< (- now fetched-at) bsky-cache-ms))
+        value
+        (let [client (http-client)]
+          (try
+            (let [profile (send-json-get client (str bsky-profile-url at-handle))
+                  feed (send-json-get client (str bsky-feed-url at-handle "&limit=4"))
+                  posts (->> (:feed feed)
+                             (keep (fn [item]
+                                     (let [view (:post item)
+                                           author (:author view)
+                                           record (:record view)
+                                           text (or (:text record) (:text (:value record)))]
+                                       (when (and view text)
+                                         {:uri (:uri view)
+                                          :text (trim-post-text text)
+                                          :indexed-at (or (:indexedAt view) (:indexedAt record))
+                                          :handle (or (:handle author) at-handle)
+                                          :display-name (:displayName author)}))))
+                             vec)
+                  value {:handle (or (:handle profile) at-handle)
+                         :display-name (:displayName profile)
+                         :posts posts
+                         :error nil}]
+              (swap! !bsky-cache assoc :handle at-handle :fetched-at now :value value)
+              value)
+            (catch Exception _
+              {:handle at-handle
+               :posts []
+               :error "Unable to load Bluesky posts right now."})))))))
+
+(defn bluesky-section []
+  (let [{:keys [handle display-name posts error]} (fetch-bsky-posts)]
+    [:section.notes-grid
+     [:article.footer-box
+      [:div.eyebrow "Bluesky"]
+      [:h2.section-title "Recent posts"]
       (cond
-        (or (= "app.bsky.embed.images" embed-type)
-            (= "app.bsky.embed.images#view" embed-type))
-        (:images embed)
+        error [:p.muted error]
+        (seq posts)
+        [:div.bsky-list
+         (for [{:keys [uri text indexed-at handle]} posts]
+           [:article.bsky-post {:key uri}
+            [:div.bsky-meta
+             [:strong (or display-name handle)]
+             [:span.muted (or indexed-at "recent")]]
+            [:p text]
+            (when-let [url (bsky-post-url handle uri)]
+              [:p
+               [:a.mono {:href url :target "_blank" :rel "noreferrer"}
+                "Open on Bluesky"]])])]
+        :else [:p.muted "No recent posts found."])]
+     [:aside.footer-box
+      [:div.eyebrow "Handle"]
+      [:p.mono (or handle "AT_HANDLE not set")]
+      [:p "Posts are fetched server-side from the public Bluesky API and cached briefly to keep page loads predictable."]]]))
 
-        (or (= "app.bsky.embed.recordWithMedia" embed-type)
-            (= "app.bsky.embed.recordWithMedia#view" embed-type))
-        (image-items (:media embed))
+(defn layout [active sections]
+  (str
+   "<!doctype html>"
+   (h/html
+    [:html {:lang "en"}
+     [:head
+      [:meta {:charset "utf-8"}]
+      [:meta {:name "viewport" :content "width=device-width, initial-scale=1"}]
+      [:title "Nandi"]
+      [:style styles]
+      [:script (h/raw now-controller-script)]
+      [:script {:type "module"
+                :src "https://cdn.jsdelivr.net/gh/starfederation/datastar@1.0.2/bundles/datastar.js"}]]
+     [:body
+      (into
+       [:main.page
+        [:header.masthead
+         [:div "Nandi"]
+         [:nav
+          (nav-link active "/" "Home")
+          (nav-link active "/work" "Work")
+          (nav-link active "/notes" "Notes")
+          (nav-link active "/contact" "Contact")]]]
+       sections)]])))
 
-        :else nil))))
+(defn home [_]
+  (-> (layout "Home" [(hero-section) (work-section) (now-section) (bluesky-section) (notes-section) (contact-section)])
+      response/response
+      (response/content-type "text/html; charset=utf-8")))
 
-(defn image-cid [image]
-  (or (get-in image [:image :ref :$link])
-      (get-in image [:image :cid])
-      (get-in image [:thumb :ref :$link])
-      (get-in image [:thumb :cid])))
+(defn work-page [_]
+  (-> (layout "Work" [(hero-section) (work-section) (now-section)])
+      response/response
+      (response/content-type "text/html; charset=utf-8")))
 
-(defn image-alt [image]
-  (or (:alt image) "Bluesky post image"))
+(defn notes-page [_]
+  (-> (layout "Notes" [(hero-section) (bluesky-section) (notes-section)])
+      response/response
+      (response/content-type "text/html; charset=utf-8")))
 
-(defn fetch-did-handle [client did]
-  (or
-   (some-> (send-json-get client (str bsky-profile-url did))
-           :handle)
-   (some->> (send-json-get client (str plc-directory-url did))
-            :alsoKnownAs
-            (keep parse-handle-uri)
-            first)))
+(defn contact-page [_]
+  (-> (layout "Contact" [(hero-section) (contact-section)])
+      response/response
+      (response/content-type "text/html; charset=utf-8")))
 
-(defn resolve-did-handle [client did]
-  (if (str/blank? did)
-    nil
-    (if-let [cached (find @!did-handle-cache did)]
-      (val cached)
-      (let [handle (fetch-did-handle client did)]
-        (swap! !did-handle-cache assoc did handle)
-        handle))))
-
-(defn skeet-fragment [posts status]
+(defn line-fragment [idx text]
   (str
    (h/html
-    [:aside.footer-box {:id "skeet-feed"
-                        :data-posts (json/generate-string posts)}
-     [:div.eyebrow "Jetstream Skeets"]
-     [:p "This panel listens to Bluesky Jetstream on the server, filters `app.bsky.feed.post`, and pushes fresh posts into the page over SSE."]
-     [:p.mono jetstream-url]
-     [:div.skeet-controls
-      [:button.button {:type "button"
-                       :onclick "window.yawSkeets.start()"}
-       "Start"]
-      [:button.button.alt {:type "button"
-                           :onclick "window.yawSkeets.pause()"}
-       "Pause"]]
-     [:p.muted.skeet-status status]
-     [:div.skeet-list
-      (if (seq posts)
-        (for [{:keys [uri handle did text created-at images]} posts]
-          [:article.skeet {:key uri}
-           [:div.skeet-meta
-            [:strong (compact-handle did handle)]
-            [:span.muted (or created-at "live")]]
-           [:p.skeet-text (or text "[no text payload]")]
-           (when (seq images)
-             [:div.skeet-images
-              (for [{:keys [cid alt]} images]
-                [:img.skeet-image {:key cid
-                                   :src (skeet-image-url did cid)
-                                   :alt alt
-                                   :loading "lazy"}])])
-           (when-let [url (skeet-url {:uri uri :handle handle :did did})]
-             [:a.skeet-link {:href url
-                             :target "_blank"
-                             :rel "noreferrer"}
-              "Open post"])])
-        [:div.line "Waiting for Jetstream posts..."])]])))
+    [:div.line {:id (str "line-" idx)}
+     [:span.mono (format "%02d" (inc idx))]
+     " "
+     text])))
 
-(defn skeet-live-fragment [_]
-  (-> (skeet-fragment [] (str "Live. Showing image posts with a " skeet-delay-ms "ms delay."))
-      response/response
-      (response/content-type "text/html; charset=utf-8")))
+(defn now-fragment [lines status]
+  (str
+   (h/html
+    [:div#now-panel
+     [:div#now-items
+      (for [[idx text] (map-indexed vector lines)]
+        [:div.line {:id (str "line-" idx) :key (str "line-" idx)}
+         [:span.mono (format "%02d" (inc idx))]
+         " "
+         text])]
+     [:p.muted.now-status status]])))
 
-(defn skeet-paused-fragment [_]
-  (-> (skeet-fragment [] "Paused. The EventSource is closed.")
-      response/response
-      (response/content-type "text/html; charset=utf-8")))
-
-(defn send-skeet-panel! [sse posts status]
+(defn send-now-panel! [sse lines status]
   (dsse/send-event! sse
-                    "skeet-panel"
-                    [(json/generate-string {:html (skeet-fragment posts status)})]))
+                    "now-panel"
+                    [(json/generate-string {:html (now-fragment lines status)})]))
 
-(defn query-param [request key]
-  (some->> (:query-string request)
-           (str/split #"&")
-           (keep (fn [part]
-                   (let [[raw-k raw-v] (str/split part #"=" 2)]
-                     (when (= raw-k key)
-                       (URLDecoder/decode (or raw-v "") (.name StandardCharsets/UTF_8))))))
-           first))
-
-(defn request-state [request]
-  (try
-    (let [state (query-param request "state")]
-      (if (str/blank? state)
-        []
-        (let [parsed (json/parse-string state true)]
-          (if (vector? parsed) parsed []))))
-    (catch Exception _
-      [])))
-
-(defn parse-skeet [payload]
-  (try
-    (let [event (json/parse-string payload true)
-          commit (:commit event)
-          record (:record commit)
-          images (some->> (:embed record)
-                          image-items
-                          (keep (fn [image]
-                                  (when-let [cid (image-cid image)]
-                                    {:cid cid
-                                     :alt (image-alt image)})))
-                          seq
-                          vec)]
-      (when (and (= "commit" (:kind event))
-                 (= "create" (:operation commit))
-                 (= "app.bsky.feed.post" (:collection commit))
-                 (map? record)
-                 (seq images))
-        {:uri (or (:uri event)
-                  (str "at://" (:did event) "/" (:collection commit) "/" (:rkey commit)))
-         :did (:did event)
-         :handle (get-in event [:identity :handle])
-         :text (:text record)
-         :created-at (:createdAt record)
-         :images images}))
-    (catch Exception _
-      nil)))
-
-(defn open-jetstream-feed! [on-post]
-  (let [messages (LinkedBlockingQueue.)
-        errors (LinkedBlockingQueue.)
-        ws-atom (atom nil)
-        client (http-client)
-        listener
-        (reify WebSocket$Listener
-          (onOpen [_ web-socket]
-            (.request web-socket Long/MAX_VALUE)
-            (reset! ws-atom web-socket))
-          (onText [_ web-socket data last?]
-            (.put messages (str data))
-            (.request web-socket 1)
-            (CompletableFuture/completedFuture nil))
-          (onError [_ _ error]
-            (.offer errors error)
-            nil)
-          (onClose [_ _ status-code reason]
-            (.offer errors (ex-info "Jetstream closed" {:status-code status-code
-                                                        :reason reason}))
-            (CompletableFuture/completedFuture nil)))]
-    (-> client
-        (.newWebSocketBuilder)
-        (.buildAsync (URI/create jetstream-url) listener)
-        (.join))
-    {:close (fn []
-              (when-let [ws @ws-atom]
-                (.sendClose ws WebSocket/NORMAL_CLOSURE "bye")
-                nil))
-     :pump! (fn []
-              (loop []
-                (if-let [error (.poll errors)]
-                  (throw error)
-                  (do
-                    (when-let [message (.poll messages 1 TimeUnit/SECONDS)]
-                      (on-post message))
-                    (recur)))))}))
-
-(defn skeet-browser-stream [request]
+(defn now-stream [request]
   (->sse-response
    request
    (hash-map
     on-open
     (fn [sse]
       (d*/with-open-sse sse
-        (let [client (http-client)
-              posts (atom (request-state request))
-              live-status (str "Live. Showing image posts with a " skeet-delay-ms "ms delay.")
-              push! (fn [post]
-                      (when (pos? skeet-delay-ms)
-                        (Thread/sleep skeet-delay-ms))
-                      (swap! posts
-                             (fn [items]
-                               (->> (cons post items)
-                                    (remove nil?)
-                                    (take 8)
-                                    vec)))
-                      (send-skeet-panel! sse @posts live-status))
-              feed (open-jetstream-feed!
-                    (fn [message]
-                      (when-let [post (parse-skeet message)]
-                        (push! (update post :handle #(or % (resolve-did-handle client (:did post))))))))]
-          (try
-            ((:pump! feed))
-            (catch Exception error
-              (push! {:uri (str "status-" (System/currentTimeMillis))
-                      :handle "jetstream status"
-                      :text (str "Stream ended: " (.getMessage error))
-                      :created-at "server note"}))
-            (finally
-              ((:close feed))))))))))
-
-(defn manifesto-stream [request]
-  (->sse-response
-   request
-   (hash-map
-    on-open
-    (fn [sse]
-      (d*/with-open-sse sse
-        (d*/patch-elements!
-         sse
-         (manifesto-fragment ["Transmission opened. The server is sending fragments..."]))
-        (doseq [idx (range (count manifesto-lines))]
+        (send-now-panel! sse [(str "Updating from the server at " (LocalTime/now) ".")] "Receiving fresh lines...")
+        (doseq [idx (range (count now-lines))]
           (Thread/sleep 450)
-          (d*/patch-elements!
-           sse
-           (manifesto-fragment (take (inc idx) manifesto-lines)))))))))
-
-(defn state-cinema-stream [request]
-  (->sse-response
-   request
-   (hash-map
-    on-open
-    (fn [sse]
-      (d*/with-open-sse sse
-        (loop [state (initial-cinema-state)]
-          (d*/patch-elements! sse (cinema-fragment state))
-          (when (< (:tick state) 11)
-            (Thread/sleep 325)
-            (recur (step-cinema-state state)))))))))
+          (send-now-panel! sse (take (inc idx) now-lines) "Receiving fresh lines..."))
+        (send-now-panel! sse now-lines "Updated just now."))))))
 
 (defn favicon [_]
   {:status 204
@@ -975,13 +705,11 @@ code, .mono {
 
 (def routes
   [["/" {:get home}]
+   ["/work" {:get work-page}]
+   ["/notes" {:get notes-page}]
+   ["/contact" {:get contact-page}]
    ["/favicon.ico" {:get favicon}]
-   ["/fragments/stack" {:get stack-fragment}]
-   ["/fragments/skeets-live" {:get skeet-live-fragment}]
-   ["/fragments/skeets-paused" {:get skeet-paused-fragment}]
-   ["/streams/skeets-browser" {:get skeet-browser-stream}]
-   ["/streams/state-cinema" {:get state-cinema-stream}]
-   ["/streams/manifesto" {:get manifesto-stream}]])
+   ["/streams/now" {:get now-stream}]])
 
 (def app
   (ring/ring-handler
