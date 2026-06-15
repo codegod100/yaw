@@ -307,15 +307,10 @@ a {
   align-items: start;
 }
 
-.notes-grid + .hero {
-  margin-top: 1.9rem;
-}
-
 .hero-card, .aside-card, .feature, .footer-box, .stream-box, .quote-box {
   border: 3px solid var(--edge);
   background: var(--panel);
   box-shadow: 0.45rem 0.45rem 0 0 var(--edge);
-  min-width: 0;
 }
 
 .hero-card {
@@ -416,15 +411,11 @@ h1 {
   backdrop-filter: blur(0);
 }
 
-.hero, .stream-section, .notes-grid, .features, .footer-grid, .feed-grid {
-  padding-bottom: 0.55rem;
-}
-
 .stream-section, .notes-grid, .footer-grid, .feed-grid {
+  margin-top: 1.6rem;
   display: grid;
   grid-template-columns: minmax(0, 1.65fr) minmax(17rem, 0.55fr);
   gap: 1.2rem;
-  margin-top: 1.6rem;
 }
 
 .stream-box, .footer-box {
@@ -490,6 +481,22 @@ code, .mono {
   white-space: pre-wrap;
 }
 
+.bsky-images {
+  display: grid;
+  gap: 0.6rem;
+  margin-top: 0.7rem;
+}
+
+.bsky-image {
+  display: block;
+  width: 100%;
+  max-width: 44rem;
+  max-height: 34rem;
+  border: 2px solid var(--edge);
+  object-fit: cover;
+  background: rgba(18, 18, 18, 0.08);
+}
+
 .likes-list {
   display: grid;
   gap: 0.9rem;
@@ -519,6 +526,12 @@ code, .mono {
 .like-item p {
   margin: 0.35rem 0 0;
   white-space: pre-wrap;
+}
+
+.like-images {
+  display: grid;
+  gap: 0.6rem;
+  margin-top: 0.7rem;
 }
 
 .likes-status {
@@ -576,6 +589,7 @@ code, .mono {
     grid-template-columns: 1fr;
   }
 }
+
 .section-title {
   margin: 0 0 0.35rem;
   font-size: 2rem;
@@ -593,25 +607,13 @@ code, .mono {
   text-transform: uppercase;
 }
 
-@media (max-width: 980px) {
-  .hero, .stream-section, .notes-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
-@media (max-width: 900px) {
-  .features, .footer-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
 @media (max-width: 840px) {
   .hero, .stream-section, .features, .footer-grid, .notes-grid, .feed-grid {
     grid-template-columns: 1fr;
   }
 
   .page {
-    width: min(calc(100vw - 2rem), 1080px);
+    width: min(100vw - 1rem, 1080px);
   }
 
   h1 {
@@ -799,6 +801,29 @@ code, .mono {
       (str (subs text 0 277) "...")
       text)))
 
+(defn image-view-items [post-view]
+  (let [embed (:embed post-view)]
+    (cond
+      (seq (:images embed))
+      (:images embed)
+
+      (seq (get-in embed [:media :images]))
+      (get-in embed [:media :images])
+
+      :else nil)))
+
+(defn post-images [post-view]
+  (->> (image-view-items post-view)
+       (keep (fn [image]
+               (let [src (or (:fullsize image)
+                             (:thumb image)
+                             (get-in image [:image :fullsize])
+                             (get-in image [:image :thumb]))]
+                 (when src
+                   {:src src
+                    :alt (or (:alt image) "Bluesky post image")}))))
+       vec))
+
 (defn fetch-bsky-post-view [uri]
   (let [cached (get @!bsky-post-view-cache uri)
         now (System/currentTimeMillis)]
@@ -841,7 +866,8 @@ code, .mono {
                                           :text (trim-post-text text)
                                           :indexed-at (or (:indexedAt view) (:indexedAt record))
                                           :handle (or (:handle author) at-handle)
-                                          :display-name (:displayName author)}))))
+                                          :display-name (:displayName author)
+                                          :images (post-images view)}))))
                              vec)
                   value {:handle (or (:handle profile) at-handle)
                          :display-name (:display-name profile)
@@ -871,7 +897,8 @@ code, .mono {
                    (format-stream-time (:time_us event))
                    "recent")
      :post-url (bsky-post-url (:handle author) post-uri)
-     :post-uri post-uri}))
+     :post-uri post-uri
+     :images (post-images post-view)}))
 
 (defn push-live-like! [{:keys [handle did display-name]} event pending]
   (let [item (like-event->item event)
@@ -897,12 +924,19 @@ code, .mono {
   [:div#likes-panel
    (if (seq likes)
      [:div.likes-list
-      (for [{:keys [id text author-handle author-name liked-at post-url post-uri like-count]} likes]
+      (for [{:keys [id text author-handle author-name liked-at post-url post-uri like-count images]} likes]
         [:article.like-item {:key (or post-uri id)}
          [:div.like-meta
           [:strong (or author-name author-handle "Bluesky post")]
           [:span.muted (str like-count " likes / " liked-at)]]
          [:p text]
+         (when (seq images)
+           [:div.like-images
+            (for [{:keys [src alt]} images]
+              [:img.bsky-image {:key src
+                                :src src
+                                :alt alt
+                                :loading "lazy"}])])
          [:p
           (if post-url
             [:a.mono {:href post-url :target "_blank" :rel "noreferrer"}
@@ -1025,7 +1059,7 @@ code, .mono {
         error [:p.muted error]
         (seq posts)
         [:div.bsky-list
-         (for [{:keys [uri text indexed-at handle]} posts]
+         (for [{:keys [uri text indexed-at handle images]} posts]
            [:article.bsky-post {:key uri}
             [:div.bsky-meta
              [:strong (or display-name handle)]
@@ -1033,6 +1067,13 @@ code, .mono {
                           :data-local-timestamp ""}
               (or indexed-at "recent")]]
             [:p text]
+            (when (seq images)
+              [:div.bsky-images
+               (for [{:keys [src alt]} images]
+                 [:img.bsky-image {:key src
+                                   :src src
+                                   :alt alt
+                                   :loading "lazy"}])])
             (when-let [url (bsky-post-url handle uri)]
               [:p
                [:a.mono {:href url :target "_blank" :rel "noreferrer"}

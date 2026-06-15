@@ -1,6 +1,7 @@
 import datastar_gleam/event
 import datastar_gleam/mist as datastar_mist
 import envoy
+import gleam/dynamic/decode
 import gleam/bytes_tree
 import gleam/erlang/process
 import gleam/http.{Get}
@@ -8,9 +9,11 @@ import gleam/http/request.{type Request}
 import gleam/http/response
 import gleam/int
 import gleam/io
+import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
+import gleam/result
 import gleam/string
 import mist
 
@@ -441,13 +444,11 @@ type NowMessage {
 @external(erlang, "yaw_ffi", "lookup_env")
 fn lookup_env(name: String) -> Result(String, Nil)
 
-@external(erlang, "yaw_ffi", "fetch_bsky_profile")
-fn fetch_bsky_profile_raw(handle: String) -> Result(#(String, String), Nil)
+@external(erlang, "yaw_ffi", "http_get")
+fn http_get(url: String) -> Result(BitArray, Nil)
 
-@external(erlang, "yaw_ffi", "fetch_bsky_posts")
-fn fetch_bsky_posts_raw(
-  handle: String,
-) -> List(#(String, String, String, String, String))
+@external(erlang, "yaw_ffi", "url_encode")
+fn url_encode(value: String) -> String
 
 pub fn main() -> Nil {
   let port = read_port()
@@ -684,28 +685,72 @@ fn bluesky_handle() -> Option(String) {
 }
 
 fn fetch_bsky_profile(handle: String) -> BskyProfile {
-  case fetch_bsky_profile_raw(handle) {
+  let url =
+    "https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile?actor="
+    <> url_encode(handle)
+
+  let decoder = {
+    use profile_handle <- decode.field("handle", decode.string)
+    use display_name <- decode.optional_field("displayName", "", decode.string)
+    decode.success(#(profile_handle, display_name))
+  }
+
+  case http_get(url)
+  |> result.replace_error(Nil)
+  |> result.try(fn(body) { json.parse_bits(body, decoder) |> result.replace_error(Nil) }) {
     Ok(#(profile_handle, display_name)) ->
       BskyProfile(
         handle: first_non_empty(profile_handle, handle),
         display_name: display_name,
       )
-    Error(_) -> BskyProfile(handle: handle, display_name: "")
+    Error(_) ->
+      BskyProfile(handle: handle, display_name: "")
   }
 }
 
 fn fetch_bsky_posts(handle: String) -> List(BskyPost) {
-  fetch_bsky_posts_raw(handle)
-  |> list.map(fn(post) {
-    let #(uri, text, indexed_at, post_handle, display_name) = post
-    BskyPost(
-      uri: uri,
-      text: text,
-      indexed_at: indexed_at,
-      handle: first_non_empty(post_handle, handle),
-      display_name: display_name,
-    )
-  })
+  let url =
+    "https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed?actor="
+    <> url_encode(handle)
+    <> "&limit=4"
+
+  let post_decoder =
+    {
+      use uri <- decode.then(decode.at(["post", "uri"], decode.string))
+      use text <- decode.then(
+        decode.optionally_at(["post", "record", "text"], "", decode.string),
+      )
+      use indexed_at <- decode.then(
+        decode.optionally_at(["post", "indexedAt"], "", decode.string),
+      )
+      use created_at <- decode.then(
+        decode.optionally_at(["post", "record", "createdAt"], "", decode.string),
+      )
+      use post_handle <- decode.then(
+        decode.optionally_at(["post", "author", "handle"], "", decode.string),
+      )
+      use display_name <- decode.then(
+        decode.optionally_at(["post", "author", "displayName"], "", decode.string),
+      )
+      decode.success(
+        BskyPost(
+          uri: uri,
+          text: text,
+          indexed_at: first_non_empty(indexed_at, created_at),
+          handle: first_non_empty(post_handle, handle),
+          display_name: display_name,
+        ),
+      )
+    }
+
+  let decoder = decode.field("feed", decode.list(of: post_decoder), decode.success)
+
+  case http_get(url)
+  |> result.replace_error(Nil)
+  |> result.try(fn(body) { json.parse_bits(body, decoder) |> result.replace_error(Nil) }) {
+    Ok(posts) -> posts
+    Error(_) -> []
+  }
 }
 
 fn bsky_post_url(handle: String, uri: String) -> Option(String) {
