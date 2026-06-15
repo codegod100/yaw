@@ -122,10 +122,30 @@ window.yawNow = (function () {
     if (node) node.textContent = text;
   }
 
+  function formatTimestamp(node) {
+    const value = node.getAttribute('datetime');
+    if (!value) return;
+
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return;
+
+    node.textContent = new Intl.DateTimeFormat(navigator.language, {
+      dateStyle: 'medium',
+      timeStyle: 'short'
+    }).format(date);
+  }
+
+  function formatTimestamps(root) {
+    (root || document).querySelectorAll('time[data-local-timestamp]').forEach(formatTimestamp);
+  }
+
   function replacePanel(html) {
     const next = new DOMParser().parseFromString(html, 'text/html').body.firstElementChild;
     const current = currentPanel();
-    if (current && next) current.replaceWith(next);
+    if (current && next) {
+      current.replaceWith(next);
+      formatTimestamps(next);
+    }
   }
 
   function stop(text) {
@@ -149,7 +169,11 @@ window.yawNow = (function () {
     };
   }
 
-  return { refresh };
+  document.addEventListener('DOMContentLoaded', function () {
+    formatTimestamps(document);
+  });
+
+  return { refresh, formatTimestamps };
 }());
 ")
 
@@ -987,7 +1011,9 @@ code, .mono {
            [:article.bsky-post {:key uri}
             [:div.bsky-meta
              [:strong (or display-name handle)]
-             [:span.muted (or indexed-at "recent")]]
+             [:time.muted {:datetime indexed-at
+                          :data-local-timestamp ""}
+              (or indexed-at "recent")]]
             [:p text]
             (when-let [url (bsky-post-url handle uri)]
               [:p
@@ -1082,6 +1108,11 @@ code, .mono {
                     "now-panel"
                     [(json/generate-string {:html (now-fragment lines status)})]))
 
+(defn local-timestamp [instant]
+  [:time {:datetime (str instant)
+          :data-local-timestamp ""}
+   (str instant)])
+
 (defn live-likes-stream [request]
   (ensure-live-likes!)
   (->sse-response
@@ -1106,7 +1137,11 @@ code, .mono {
     on-open
     (fn [sse]
       (d*/with-open-sse sse
-        (send-now-panel! sse [(str "Updating from the server at " (LocalTime/now) ".")] "Receiving fresh lines...")
+        (let [server-time (Instant/now)]
+          (send-now-panel! sse [(list "Updating from the server at "
+                                  (local-timestamp server-time)
+                                  ".")]
+                           "Receiving fresh lines..."))
         (doseq [idx (range (count now-lines))]
           (Thread/sleep 450)
           (send-now-panel! sse (take (inc idx) now-lines) "Receiving fresh lines..."))
