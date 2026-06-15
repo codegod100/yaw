@@ -3,6 +3,7 @@
 {
   packages = with pkgs; [
     clojure
+    jj
     jdk21
     rlwrap
     tailscale

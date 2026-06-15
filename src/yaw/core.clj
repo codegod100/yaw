@@ -101,6 +101,7 @@
   (atom {:handle at-handle
          :did nil
          :display-name nil
+         :like-counts {}
          :likes []
          :status (if (str/blank? at-handle)
                    "Set AT_HANDLE in .env to start the live likes stream."
@@ -237,7 +238,7 @@ window.addEventListener('DOMContentLoaded', function () {
   --muted: rgba(18, 18, 18, 0.68);
   --panel: rgba(255, 244, 160, 0.82);
   --accent: #121212;
-  --page-max: 1320px;
+  --page-max: 1500px;
   --page-gutter: clamp(0.9rem, 2vw, 1.6rem);
 }
 
@@ -301,7 +302,7 @@ a {
 
 .hero {
   display: grid;
-  grid-template-columns: minmax(0, 1.55fr) minmax(17rem, 0.72fr);
+  grid-template-columns: minmax(0, 1.8fr) minmax(18rem, 0.62fr);
   gap: 1.35rem;
   align-items: start;
 }
@@ -410,10 +411,10 @@ h1 {
   backdrop-filter: blur(0);
 }
 
-.stream-section, .notes-grid, .footer-grid {
+.stream-section, .notes-grid, .footer-grid, .feed-grid {
   margin-top: 1.6rem;
   display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(16rem, 0.78fr);
+  grid-template-columns: minmax(0, 1.65fr) minmax(17rem, 0.55fr);
   gap: 1.2rem;
 }
 
@@ -554,11 +555,15 @@ code, .mono {
 }
 
 .notes-grid {
-  grid-template-columns: minmax(0, 1.2fr) minmax(16rem, 0.85fr);
+  grid-template-columns: minmax(0, 1.55fr) minmax(17rem, 0.65fr);
+}
+
+.feed-grid {
+  grid-template-columns: minmax(0, 2.2fr) minmax(15rem, 0.42fr);
 }
 
 @media (max-width: 1180px) {
-  .hero, .stream-section, .notes-grid {
+  .hero, .stream-section, .notes-grid, .feed-grid {
     grid-template-columns: 1fr;
   }
 }
@@ -581,7 +586,7 @@ code, .mono {
 }
 
 @media (max-width: 840px) {
-  .hero, .stream-section, .features, .footer-grid, .notes-grid {
+  .hero, .stream-section, .features, .footer-grid, .notes-grid, .feed-grid {
     grid-template-columns: 1fr;
   }
 
@@ -703,10 +708,19 @@ code, .mono {
                (assoc :status status)
                update-version))))
 
-(defn remember-like [likes item]
-  (->> (cons item (remove #(= (:id %) (:id item)) likes))
-       (take live-likes-max-items)
-       vec))
+(defn remember-like [state item]
+  (let [post-uri (:post-uri item)
+        like-counts (update (:like-counts state) post-uri (fnil inc 0))
+        like-count (get like-counts post-uri 0)
+        item (assoc item :like-count like-count)
+        likes (if (>= like-count 2)
+                (->> (cons item (remove #(= (:post-uri %) post-uri) (:likes state)))
+                     (take live-likes-max-items)
+                     vec)
+                (:likes state))]
+    (assoc state
+           :like-counts like-counts
+           :likes likes)))
 
 (defn format-stream-time [value]
   (when value
@@ -851,12 +865,11 @@ code, .mono {
                         :did did
                         :display-name display-name
                         :status status)
-                 (update :likes remember-like item)
+                 (remember-like item)
                  update-version)))))
 
-(defn like-event? [event did]
+(defn like-event? [event]
   (and (= "commit" (:kind event))
-       (= did (:did event))
        (= "create" (get-in event [:commit :operation]))
        (= "app.bsky.feed.like" (get-in event [:commit :collection]))))
 
@@ -864,18 +877,18 @@ code, .mono {
   [:div#likes-panel
    (if (seq likes)
      [:div.likes-list
-      (for [{:keys [id text author-handle author-name liked-at post-url post-uri]} likes]
-        [:article.like-item {:key id}
+      (for [{:keys [id text author-handle author-name liked-at post-url post-uri like-count]} likes]
+        [:article.like-item {:key (or post-uri id)}
          [:div.like-meta
           [:strong (or author-name author-handle "Bluesky post")]
-          [:span.muted liked-at]]
+          [:span.muted (str like-count " likes / " liked-at)]]
          [:p text]
          [:p
           (if post-url
             [:a.mono {:href post-url :target "_blank" :rel "noreferrer"}
              "Open liked post"]
             [:span.mono (or post-uri "Post unavailable")])]])]
-     [:p.muted "Waiting for the next live like to arrive."])
+     [:p.muted "Waiting for a post to reach 2 likes on Jetstream."])
    [:p.muted.likes-status status]])
 
 (defn live-likes-fragment []
@@ -902,10 +915,9 @@ code, .mono {
       (when @running?
         (Thread/sleep live-likes-delay-ms)))))
 
-(defn connect-jetstream! [client {:keys [did] :as profile} queue websocket* running?]
+(defn connect-jetstream! [client queue websocket*]
   (let [uri (str jetstream-url
-                 "?wantedCollections=app.bsky.feed.like&wantedDids="
-                 (url-encode did))
+                 "?wantedCollections=app.bsky.feed.like")
         close-signal (promise)
         buffer (StringBuilder.)]
     (-> (.newWebSocketBuilder client)
@@ -924,8 +936,8 @@ code, .mono {
                  (.setLength buffer 0)
                  (try
                    (let [event (json/parse-string message true)]
-                     (when (like-event? event did)
-                       (.offer queue {:profile profile :event event})
+                     (when (like-event? event)
+                       (.offer queue {:event event})
                        (set-live-likes-status! live-likes-buffer-status)))
                    (catch Exception _
                      nil))))
@@ -944,33 +956,19 @@ code, .mono {
 (defn stream-live-likes! [running? websocket* queue]
   (let [client (http-client)]
     (while @running?
-      (let [{:keys [handle did display-name error] :as profile} (fetch-bsky-profile)]
-        (if (or error (str/blank? did))
-          (do
-            (set-live-likes-status! (or error "Unable to resolve the Bluesky DID for live likes."))
-            (Thread/sleep 5000))
-          (do
-            (swap! !live-likes-state
-                   (fn [state]
-                     (-> state
-                         (assoc :handle handle :did did :display-name display-name)
-                         update-version)))
-            (try
-              (let [close-signal (connect-jetstream! client profile queue websocket* running?)
-                    {:keys [reason]} @close-signal]
-                (when @running?
-                  (set-live-likes-status! (str (or reason "Jetstream disconnected.") " Reconnecting..."))
-                  (Thread/sleep 3000)))
-              (catch Exception _
-                (when @running?
-                  (set-live-likes-status! "Unable to connect to Jetstream. Retrying...")
-                  (Thread/sleep 3000)))))))))
+      (try
+        (let [close-signal (connect-jetstream! client queue websocket*)
+              {:keys [reason]} @close-signal]
+          (when @running?
+            (set-live-likes-status! (str (or reason "Jetstream disconnected.") " Reconnecting..."))
+            (Thread/sleep 3000)))
+        (catch Exception _
+          (when @running?
+            (set-live-likes-status! "Unable to connect to Jetstream. Retrying...")
+            (Thread/sleep 3000)))))))
 
 (defn ensure-live-likes! []
   (cond
-    (str/blank? at-handle)
-    (set-live-likes-status! "Set AT_HANDLE in .env to start the live likes stream.")
-
     (live-likes-running?)
     @!live-likes-runtime
 
@@ -999,7 +997,7 @@ code, .mono {
 
 (defn bluesky-section []
   (let [{:keys [handle display-name posts error]} (fetch-bsky-posts)]
-    [:section.notes-grid
+    [:section.feed-grid
      [:article.footer-box
       [:div.eyebrow "Bluesky"]
       [:h2.section-title "Recent posts"]
@@ -1027,15 +1025,15 @@ code, .mono {
 
 (defn live-likes-section []
   (ensure-live-likes!)
-  [:section.notes-grid
+  [:section.feed-grid
    [:article.footer-box
     [:div.eyebrow "Jetstream"]
-    [:h2.section-title "Live likes"]
+    [:h2.section-title "All live likes"]
     (live-likes-panel @!live-likes-state)]
    [:aside.footer-box
     [:div.eyebrow "Stream"]
-    [:p.mono (or (:did @!live-likes-state) "Resolving DID...")]
-    [:p "Likes stream in from Jetstream and are intentionally paced before rendering so bursts stay readable."]]])
+    [:p.mono "app.bsky.feed.like"]
+    [:p "All like events stream in from Jetstream and are intentionally paced before rendering so bursts stay readable."]]])
 
 (defn layout [active sections]
   (str
