@@ -641,7 +641,7 @@ code, .mono {
        sections)]])))
 
 (defn home [_]
-  (-> (layout "Home" [(hero-section) (work-section) (now-section) (bluesky-section) (notes-section) (contact-section)])
+  (-> (layout "Home" [(bluesky-section) (hero-section) (work-section) (now-section) (notes-section) (contact-section)])
       response/response
       (response/content-type "text/html; charset=utf-8")))
 
@@ -651,7 +651,7 @@ code, .mono {
       (response/content-type "text/html; charset=utf-8")))
 
 (defn notes-page [_]
-  (-> (layout "Notes" [(hero-section) (bluesky-section) (notes-section)])
+  (-> (layout "Notes" [(bluesky-section) (hero-section) (notes-section)])
       response/response
       (response/content-type "text/html; charset=utf-8")))
 
