@@ -3,8 +3,7 @@
    (java.net URI URLEncoder)
    (java.net.http HttpClient HttpRequest HttpResponse$BodyHandlers WebSocket WebSocket$Listener)
    (java.nio.charset StandardCharsets)
-   (java.time Instant LocalTime ZoneId)
-   (java.time.format DateTimeFormatter)
+   (java.time Instant LocalTime)
    (java.util.concurrent CompletableFuture LinkedBlockingDeque TimeUnit))
   (:require
    [cheshire.core :as json]
@@ -92,10 +91,6 @@
 (def live-likes-poll-ms 250)
 (def live-likes-idle-status "Listening for new likes.")
 (def live-likes-buffer-status "Buffering new likes so the page stays readable.")
-
-(def stream-time-format
-  (DateTimeFormatter/ofPattern "HH:mm:ss")
-  )
 
 (defonce !live-likes-state
   (atom {:handle at-handle
@@ -744,18 +739,14 @@ code, .mono {
            :like-counts like-counts
            :likes likes)))
 
-(defn format-stream-time [value]
+(defn stream-instant [value]
   (when value
-    (-> (Instant/ofEpochMilli (quot (long value) 1000))
-        (.atZone (ZoneId/systemDefault))
-        (.format stream-time-format))))
+    (Instant/ofEpochMilli (quot (long value) 1000))))
 
-(defn format-iso-time [value]
+(defn parse-iso-time [value]
   (when value
     (try
-      (-> (Instant/parse value)
-          (.atZone (ZoneId/systemDefault))
-          (.format stream-time-format))
+      (Instant/parse value)
       (catch Exception _
         value))))
 
@@ -893,8 +884,8 @@ code, .mono {
      :text (trim-post-text text)
      :author-handle (:handle author)
      :author-name (:displayName author)
-     :liked-at (or (format-iso-time (get-in event [:commit :record :createdAt]))
-                   (format-stream-time (:time_us event))
+     :liked-at (or (parse-iso-time (get-in event [:commit :record :createdAt]))
+                   (stream-instant (:time_us event))
                    "recent")
      :post-url (bsky-post-url (:handle author) post-uri)
      :post-uri post-uri
@@ -928,7 +919,11 @@ code, .mono {
         [:article.like-item {:key (or post-uri id)}
          [:div.like-meta
           [:strong (or author-name author-handle "Bluesky post")]
-          [:span.muted (str like-count " likes / " liked-at)]]
+          [:span.muted
+           (str like-count " likes / ")
+           (if (instance? Instant liked-at)
+             (local-timestamp liked-at)
+             liked-at)]]
          [:p text]
          (when (seq images)
            [:div.like-images
