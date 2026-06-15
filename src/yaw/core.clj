@@ -343,27 +343,6 @@ code, .mono {
   margin-top: 0.6rem;
 }
 
-.bsky-featured {
-  display: grid;
-  gap: 0.65rem;
-  padding: 1rem;
-  margin-top: 0.8rem;
-  border: 3px solid var(--edge);
-  background: rgba(255, 244, 160, 0.54);
-}
-
-.bsky-featured .bsky-meta {
-  border-bottom: 2px solid rgba(18, 18, 18, 0.18);
-  padding-bottom: 0.55rem;
-}
-
-.bsky-featured p {
-  margin: 0;
-  font-size: 1.15rem;
-  line-height: 1.4;
-  white-space: pre-wrap;
-}
-
 .bsky-post {
   border-top: 2px solid rgba(18, 18, 18, 0.18);
   padding-top: 0.75rem;
@@ -619,32 +598,17 @@ code, .mono {
       (cond
         error [:p.muted error]
         (seq posts)
-        (let [[featured-post & recent-posts] posts]
-          [:<>
-           (when featured-post
-             (let [{:keys [uri text indexed-at handle]} featured-post]
-               [:article.bsky-featured {:key uri}
-                [:div.eyebrow "Featured post"]
-                [:div.bsky-meta
-                 [:strong (or display-name handle)]
-                 [:span.muted (or indexed-at "recent")]]
-                [:p text]
-                (when-let [url (bsky-post-url handle uri)]
-                  [:p
-                   [:a.mono {:href url :target "_blank" :rel "noreferrer"}
-                    "Open on Bluesky"]])]))
-           (when (seq recent-posts)
-             [:div.bsky-list
-              (for [{:keys [uri text indexed-at handle]} recent-posts]
-                [:article.bsky-post {:key uri}
-                 [:div.bsky-meta
-                  [:strong (or display-name handle)]
-                  [:span.muted (or indexed-at "recent")]]
-                 [:p text]
-                 (when-let [url (bsky-post-url handle uri)]
-                   [:p
-                    [:a.mono {:href url :target "_blank" :rel "noreferrer"}
-                     "Open on Bluesky"]])])])])
+        [:div.bsky-list
+         (for [{:keys [uri text indexed-at handle]} posts]
+           [:article.bsky-post {:key uri}
+            [:div.bsky-meta
+             [:strong (or display-name handle)]
+             [:span.muted (or indexed-at "recent")]]
+            [:p text]
+            (when-let [url (bsky-post-url handle uri)]
+              [:p
+               [:a.mono {:href url :target "_blank" :rel "noreferrer"}
+                "Open on Bluesky"]])])]
         :else [:p.muted "No recent posts found."])]
      [:aside.footer-box
       [:div.eyebrow "Handle"]
@@ -677,7 +641,7 @@ code, .mono {
        sections)]])))
 
 (defn home [_]
-  (-> (layout "Home" [(hero-section) (work-section) (now-section) (bluesky-section) (notes-section) (contact-section)])
+  (-> (layout "Home" [(bluesky-section) (hero-section) (work-section) (now-section) (notes-section) (contact-section)])
       response/response
       (response/content-type "text/html; charset=utf-8")))
 
@@ -687,7 +651,7 @@ code, .mono {
       (response/content-type "text/html; charset=utf-8")))
 
 (defn notes-page [_]
-  (-> (layout "Notes" [(hero-section) (bluesky-section) (notes-section)])
+  (-> (layout "Notes" [(bluesky-section) (hero-section) (notes-section)])
       response/response
       (response/content-type "text/html; charset=utf-8")))
 
