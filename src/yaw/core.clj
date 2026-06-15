@@ -1,8 +1,11 @@
 (ns yaw.core
   (:import
-   (java.net URI)
-   (java.net.http HttpClient HttpRequest HttpResponse$BodyHandlers)
-   (java.time Instant))
+   (java.net URI URLEncoder)
+   (java.net.http HttpClient HttpRequest HttpResponse$BodyHandlers WebSocket WebSocket$Listener)
+   (java.nio.charset StandardCharsets)
+   (java.time Instant LocalTime ZoneId)
+   (java.time.format DateTimeFormatter)
+   (java.util.concurrent CompletableFuture LinkedBlockingDeque TimeUnit))
   (:require
    [cheshire.core :as json]
    [clojure.string :as str]
@@ -72,8 +75,39 @@
 (def bsky-feed-url
   "https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed?actor=")
 
-(defonce !bsky-cache (atom {:handle nil :fetched-at 0 :value nil}))
+(def bsky-posts-url
+  "https://public.api.bsky.app/xrpc/app.bsky.feed.getPosts?uris=")
+
+(def jetstream-url
+  "wss://jetstream2.us-west.bsky.network/subscribe")
+
+(defonce !bsky-profile-cache (atom {:handle nil :fetched-at 0 :value nil}))
+(defonce !bsky-posts-cache (atom {:handle nil :fetched-at 0 :value nil}))
+(defonce !bsky-post-view-cache (atom {}))
 (def bsky-cache-ms 300000)
+(def bsky-post-view-cache-ms 3600000)
+
+(def live-likes-max-items 8)
+(def live-likes-delay-ms 1400)
+(def live-likes-poll-ms 250)
+(def live-likes-idle-status "Listening for new likes.")
+(def live-likes-buffer-status "Buffering new likes so the page stays readable.")
+
+(def stream-time-format
+  (DateTimeFormatter/ofPattern "HH:mm:ss")
+  )
+
+(defonce !live-likes-state
+  (atom {:handle at-handle
+         :did nil
+         :display-name nil
+         :likes []
+         :status (if (str/blank? at-handle)
+                   "Set AT_HANDLE in .env to start the live likes stream."
+                   "Connecting to Jetstream...")
+         :version 0}))
+
+(defonce !live-likes-runtime (atom nil))
 
 (def now-controller-script "
 window.yawNow = (function () {
@@ -143,6 +177,58 @@ window.yawNow = (function () {
 }());
 ")
 
+(def likes-controller-script "
+window.yawLikes = (function () {
+  let source = null;
+  let started = false;
+
+  function currentPanel() {
+    return document.getElementById('likes-panel');
+  }
+
+  function setStatus(text) {
+    const node = document.querySelector('#likes-panel .likes-status');
+    if (node) node.textContent = text;
+  }
+
+  function replacePanel(html) {
+    const next = new DOMParser().parseFromString(html, 'text/html').body.firstElementChild;
+    const current = currentPanel();
+    if (current && next) current.replaceWith(next);
+  }
+
+  function connect() {
+    if (source) return;
+    setStatus('Connecting to Jetstream...');
+    source = new EventSource('/streams/bluesky-likes');
+    source.addEventListener('bluesky-likes-panel', function (event) {
+      const payload = JSON.parse(event.data);
+      replacePanel(payload.html);
+    });
+    source.onerror = function () {
+      if (source) {
+        source.close();
+        source = null;
+      }
+      setStatus('Realtime stream interrupted. Retrying...');
+      window.setTimeout(connect, 3000);
+    };
+  }
+
+  function start() {
+    if (started || !currentPanel()) return;
+    started = true;
+    connect();
+  }
+
+  return { start };
+}());
+
+window.addEventListener('DOMContentLoaded', function () {
+  window.yawLikes.start();
+});
+")
+
 (def styles "
 :root {
   --paper: #f3d33b;
@@ -151,6 +237,8 @@ window.yawNow = (function () {
   --muted: rgba(18, 18, 18, 0.68);
   --panel: rgba(255, 244, 160, 0.82);
   --accent: #121212;
+  --page-max: 1320px;
+  --page-gutter: clamp(0.9rem, 2vw, 1.6rem);
 }
 
 * { box-sizing: border-box; }
@@ -177,7 +265,7 @@ a {
 }
 
 .page {
-  width: min(1120px, calc(100vw - 2rem));
+  width: min(var(--page-max), calc(100vw - (var(--page-gutter) * 2)));
   margin: 0 auto;
   padding: 1.2rem 0 3.5rem;
 }
@@ -213,8 +301,8 @@ a {
 
 .hero {
   display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(19rem, 0.85fr);
-  gap: 1.2rem;
+  grid-template-columns: minmax(0, 1.55fr) minmax(17rem, 0.72fr);
+  gap: 1.35rem;
   align-items: start;
 }
 
@@ -303,7 +391,7 @@ h1 {
 
 .features {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
   gap: 1rem;
   margin-top: 1.5rem;
 }
@@ -325,8 +413,8 @@ h1 {
 .stream-section, .notes-grid, .footer-grid {
   margin-top: 1.6rem;
   display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(18rem, 0.85fr);
-  gap: 1rem;
+  grid-template-columns: minmax(0, 1.35fr) minmax(16rem, 0.78fr);
+  gap: 1.2rem;
 }
 
 .stream-box, .footer-box {
@@ -392,6 +480,41 @@ code, .mono {
   white-space: pre-wrap;
 }
 
+.likes-list {
+  display: grid;
+  gap: 0.9rem;
+  margin-top: 0.75rem;
+}
+
+.like-item {
+  border-top: 2px solid rgba(18, 18, 18, 0.18);
+  padding-top: 0.75rem;
+}
+
+.like-item:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.like-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: baseline;
+  font-family: Avenir Next Condensed, Franklin Gothic Medium, Arial Narrow, sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.like-item p {
+  margin: 0.35rem 0 0;
+  white-space: pre-wrap;
+}
+
+.likes-status {
+  margin-top: 0.9rem;
+}
+
 .note-item {
   border-top: 2px solid rgba(18, 18, 18, 0.18);
   padding-top: 0.75rem;
@@ -431,7 +554,13 @@ code, .mono {
 }
 
 .notes-grid {
-  grid-template-columns: minmax(0, 1fr) minmax(20rem, 0.9fr);
+  grid-template-columns: minmax(0, 1.2fr) minmax(16rem, 0.85fr);
+}
+
+@media (max-width: 1180px) {
+  .hero, .stream-section, .notes-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .section-title {
@@ -552,6 +681,9 @@ code, .mono {
   (-> (HttpClient/newBuilder)
       (.build)))
 
+(defn url-encode [value]
+  (URLEncoder/encode (str value) StandardCharsets/UTF_8))
+
 (defn send-json-get [client url]
   (let [request (-> (HttpRequest/newBuilder (URI/create url))
                     (.header "accept" "application/json")
@@ -560,6 +692,66 @@ code, .mono {
         response (.send client request (HttpResponse$BodyHandlers/ofString))]
     (when (= 200 (.statusCode response))
       (json/parse-string (.body response) true))))
+
+(defn update-version [state]
+  (update state :version (fnil inc 0)))
+
+(defn set-live-likes-status! [status]
+  (swap! !live-likes-state
+         (fn [state]
+           (-> state
+               (assoc :status status)
+               update-version))))
+
+(defn remember-like [likes item]
+  (->> (cons item (remove #(= (:id %) (:id item)) likes))
+       (take live-likes-max-items)
+       vec))
+
+(defn format-stream-time [value]
+  (when value
+    (-> (Instant/ofEpochMilli (quot (long value) 1000))
+        (.atZone (ZoneId/systemDefault))
+        (.format stream-time-format))))
+
+(defn format-iso-time [value]
+  (when value
+    (try
+      (-> (Instant/parse value)
+          (.atZone (ZoneId/systemDefault))
+          (.format stream-time-format))
+      (catch Exception _
+        value))))
+
+(defn fetch-bsky-profile []
+  (cond
+    (str/blank? at-handle)
+    {:handle nil
+     :display-name nil
+     :did nil
+     :error "Set AT_HANDLE in .env to show Bluesky data."}
+
+    :else
+    (let [{:keys [handle fetched-at value]} @!bsky-profile-cache
+          now (System/currentTimeMillis)]
+      (if (and (= handle at-handle)
+               value
+               (< (- now fetched-at) bsky-cache-ms))
+        value
+        (let [client (http-client)]
+          (try
+            (let [profile (send-json-get client (str bsky-profile-url (url-encode at-handle)))
+                  value {:handle (or (:handle profile) at-handle)
+                         :display-name (:displayName profile)
+                         :did (:did profile)
+                         :error nil}]
+              (swap! !bsky-profile-cache assoc :handle at-handle :fetched-at now :value value)
+              value)
+            (catch Exception _
+              {:handle at-handle
+               :display-name nil
+               :did nil
+               :error "Unable to load the Bluesky profile right now."})))))))
 
 (defn bsky-post-url [handle uri]
   (when (and handle uri)
@@ -573,13 +765,28 @@ code, .mono {
       (str (subs text 0 277) "...")
       text)))
 
+(defn fetch-bsky-post-view [uri]
+  (let [cached (get @!bsky-post-view-cache uri)
+        now (System/currentTimeMillis)]
+    (if (and cached
+             (< (- now (:fetched-at cached)) bsky-post-view-cache-ms))
+      (:value cached)
+      (let [client (http-client)]
+        (try
+          (let [response (send-json-get client (str bsky-posts-url (url-encode uri)))
+                view (first (:posts response))]
+            (swap! !bsky-post-view-cache assoc uri {:fetched-at now :value view})
+            view)
+          (catch Exception _
+            nil))))))
+
 (defn fetch-bsky-posts []
   (cond
     (str/blank? at-handle)
     {:handle nil :posts [] :error "Set AT_HANDLE in .env to show recent Bluesky posts."}
 
     :else
-    (let [{:keys [handle fetched-at value]} @!bsky-cache
+    (let [{:keys [handle fetched-at value]} @!bsky-posts-cache
           now (System/currentTimeMillis)]
       (if (and (= handle at-handle)
                value
@@ -587,8 +794,8 @@ code, .mono {
         value
         (let [client (http-client)]
           (try
-            (let [profile (send-json-get client (str bsky-profile-url at-handle))
-                  feed (send-json-get client (str bsky-feed-url at-handle "&limit=4"))
+            (let [profile (fetch-bsky-profile)
+                  feed (send-json-get client (str bsky-feed-url (url-encode at-handle) "&limit=4"))
                   posts (->> (:feed feed)
                              (keep (fn [item]
                                      (let [view (:post item)
@@ -603,15 +810,192 @@ code, .mono {
                                           :display-name (:displayName author)}))))
                              vec)
                   value {:handle (or (:handle profile) at-handle)
-                         :display-name (:displayName profile)
+                         :display-name (:display-name profile)
                          :posts posts
                          :error nil}]
-              (swap! !bsky-cache assoc :handle at-handle :fetched-at now :value value)
+              (swap! !bsky-posts-cache assoc :handle at-handle :fetched-at now :value value)
               value)
             (catch Exception _
               {:handle at-handle
                :posts []
                :error "Unable to load Bluesky posts right now."})))))))
+
+(defn like-event->item [event]
+  (let [subject-uri (get-in event [:commit :record :subject :uri])
+        post-view (when subject-uri (fetch-bsky-post-view subject-uri))
+        author (:author post-view)
+        record (:record post-view)
+        text (or (:text record)
+                 (:text (:value record))
+                 "Liked a post without a text preview.")
+        post-uri (or (:uri post-view) subject-uri)]
+    {:id (str (:did event) ":" (get-in event [:commit :rkey]))
+     :text (trim-post-text text)
+     :author-handle (:handle author)
+     :author-name (:displayName author)
+     :liked-at (or (format-iso-time (get-in event [:commit :record :createdAt]))
+                   (format-stream-time (:time_us event))
+                   "recent")
+     :post-url (bsky-post-url (:handle author) post-uri)
+     :post-uri post-uri}))
+
+(defn push-live-like! [{:keys [handle did display-name]} event pending]
+  (let [item (like-event->item event)
+        status (if (pos? pending)
+                 (str live-likes-buffer-status " " pending " more queued.")
+                 live-likes-idle-status)]
+    (swap! !live-likes-state
+           (fn [state]
+             (-> state
+                 (assoc :handle handle
+                        :did did
+                        :display-name display-name
+                        :status status)
+                 (update :likes remember-like item)
+                 update-version)))))
+
+(defn like-event? [event did]
+  (and (= "commit" (:kind event))
+       (= did (:did event))
+       (= "create" (get-in event [:commit :operation]))
+       (= "app.bsky.feed.like" (get-in event [:commit :collection]))))
+
+(defn live-likes-panel [{:keys [likes status]}]
+  [:div#likes-panel
+   (if (seq likes)
+     [:div.likes-list
+      (for [{:keys [id text author-handle author-name liked-at post-url post-uri]} likes]
+        [:article.like-item {:key id}
+         [:div.like-meta
+          [:strong (or author-name author-handle "Bluesky post")]
+          [:span.muted liked-at]]
+         [:p text]
+         [:p
+          (if post-url
+            [:a.mono {:href post-url :target "_blank" :rel "noreferrer"}
+             "Open liked post"]
+            [:span.mono (or post-uri "Post unavailable")])]])]
+     [:p.muted "Waiting for the next live like to arrive."])
+   [:p.muted.likes-status status]])
+
+(defn live-likes-fragment []
+  (str
+   (h/html
+    (live-likes-panel @!live-likes-state))))
+
+(defn send-live-likes-panel! [sse]
+  (dsse/send-event! sse
+                    "bluesky-likes-panel"
+                    [(json/generate-string {:html (live-likes-fragment)})]))
+
+(defn live-likes-running? []
+  (let [{:keys [stream-future drain-future]} @!live-likes-runtime]
+    (and stream-future
+         drain-future
+         (not (future-done? stream-future))
+         (not (future-done? drain-future)))))
+
+(defn drain-live-likes! [running? queue]
+  (while @running?
+    (when-let [{:keys [profile event]} (.poll queue 1 TimeUnit/SECONDS)]
+      (push-live-like! profile event (.size queue))
+      (when @running?
+        (Thread/sleep live-likes-delay-ms)))))
+
+(defn connect-jetstream! [client {:keys [did] :as profile} queue websocket* running?]
+  (let [uri (str jetstream-url
+                 "?wantedCollections=app.bsky.feed.like&wantedDids="
+                 (url-encode did))
+        close-signal (promise)
+        buffer (StringBuilder.)]
+    (-> (.newWebSocketBuilder client)
+        (.buildAsync
+         (URI/create uri)
+         (reify WebSocket$Listener
+           (onOpen [_ websocket]
+             (reset! websocket* websocket)
+             (.request websocket 1)
+             (set-live-likes-status! live-likes-idle-status))
+
+           (onText [_ websocket data last]
+             (.append buffer data)
+             (when last
+               (let [message (str buffer)]
+                 (.setLength buffer 0)
+                 (try
+                   (let [event (json/parse-string message true)]
+                     (when (like-event? event did)
+                       (.offer queue {:profile profile :event event})
+                       (set-live-likes-status! live-likes-buffer-status)))
+                   (catch Exception _
+                     nil))))
+             (.request websocket 1)
+             (CompletableFuture/completedFuture nil))
+
+           (onClose [_ _ status-code reason]
+             (deliver close-signal {:status status-code :reason reason})
+             (CompletableFuture/completedFuture nil))
+
+           (onError [_ _ error]
+             (deliver close-signal {:status :error :reason (.getMessage error)}))))
+        .join)
+    close-signal))
+
+(defn stream-live-likes! [running? websocket* queue]
+  (let [client (http-client)]
+    (while @running?
+      (let [{:keys [handle did display-name error] :as profile} (fetch-bsky-profile)]
+        (if (or error (str/blank? did))
+          (do
+            (set-live-likes-status! (or error "Unable to resolve the Bluesky DID for live likes."))
+            (Thread/sleep 5000))
+          (do
+            (swap! !live-likes-state
+                   (fn [state]
+                     (-> state
+                         (assoc :handle handle :did did :display-name display-name)
+                         update-version)))
+            (try
+              (let [close-signal (connect-jetstream! client profile queue websocket* running?)
+                    {:keys [reason]} @close-signal]
+                (when @running?
+                  (set-live-likes-status! (str (or reason "Jetstream disconnected.") " Reconnecting..."))
+                  (Thread/sleep 3000)))
+              (catch Exception _
+                (when @running?
+                  (set-live-likes-status! "Unable to connect to Jetstream. Retrying...")
+                  (Thread/sleep 3000)))))))))
+
+(defn ensure-live-likes! []
+  (cond
+    (str/blank? at-handle)
+    (set-live-likes-status! "Set AT_HANDLE in .env to start the live likes stream.")
+
+    (live-likes-running?)
+    @!live-likes-runtime
+
+    :else
+    (let [running? (atom true)
+          websocket* (atom nil)
+          queue (LinkedBlockingDeque.)
+          drain-future (future (drain-live-likes! running? queue))
+          stream-future (future (stream-live-likes! running? websocket* queue))
+          runtime {:running? running?
+                   :websocket websocket*
+                   :queue queue
+                   :drain-future drain-future
+                   :stream-future stream-future}]
+      (reset! !live-likes-runtime runtime)
+      runtime)))
+
+(defn stop-live-likes! []
+  (when-let [{:keys [running? websocket drain-future stream-future]} @!live-likes-runtime]
+    (reset! running? false)
+    (when-let [socket @websocket]
+      (.abort socket))
+    (future-cancel drain-future)
+    (future-cancel stream-future)
+    (reset! !live-likes-runtime nil)))
 
 (defn bluesky-section []
   (let [{:keys [handle display-name posts error]} (fetch-bsky-posts)]
@@ -641,6 +1025,18 @@ code, .mono {
       [:p.mono (or handle "AT_HANDLE not set")]
       [:p "Posts are fetched server-side from the public Bluesky API and cached briefly to keep page loads predictable."]]]))
 
+(defn live-likes-section []
+  (ensure-live-likes!)
+  [:section.notes-grid
+   [:article.footer-box
+    [:div.eyebrow "Jetstream"]
+    [:h2.section-title "Live likes"]
+    (live-likes-panel @!live-likes-state)]
+   [:aside.footer-box
+    [:div.eyebrow "Stream"]
+    [:p.mono (or (:did @!live-likes-state) "Resolving DID...")]
+    [:p "Likes stream in from Jetstream and are intentionally paced before rendering so bursts stay readable."]]])
+
 (defn layout [active sections]
   (str
    "<!doctype html>"
@@ -652,6 +1048,7 @@ code, .mono {
       [:title "Nandi"]
       [:style styles]
       [:script (h/raw now-controller-script)]
+      [:script (h/raw likes-controller-script)]
       [:script {:type "module"
                 :src "https://cdn.jsdelivr.net/gh/starfederation/datastar@1.0.2/bundles/datastar.js"}]]
      [:body
@@ -667,7 +1064,7 @@ code, .mono {
        sections)]])))
 
 (defn home [_]
-  (-> (layout "Home" [(bluesky-section) (hero-section) (work-section) (now-section) (notes-section) (contact-section)])
+  (-> (layout "Home" [(bluesky-section) (live-likes-section) (hero-section) (work-section) (now-section) (notes-section) (contact-section)])
       response/response
       (response/content-type "text/html; charset=utf-8")))
 
@@ -677,7 +1074,7 @@ code, .mono {
       (response/content-type "text/html; charset=utf-8")))
 
 (defn notes-page [_]
-  (-> (layout "Notes" [(bluesky-section) (hero-section) (notes-section)])
+  (-> (layout "Notes" [(bluesky-section) (live-likes-section) (hero-section) (notes-section)])
       response/response
       (response/content-type "text/html; charset=utf-8")))
 
@@ -716,6 +1113,23 @@ code, .mono {
           :data-local-timestamp ""}
    (str instant)])
 
+(defn live-likes-stream [request]
+  (ensure-live-likes!)
+  (->sse-response
+   request
+   (hash-map
+    on-open
+    (fn [sse]
+      (d*/with-open-sse sse
+        (loop [seen-version nil ticks 0]
+          (let [{:keys [version]} @!live-likes-state]
+            (when (not= version seen-version)
+              (send-live-likes-panel! sse))
+            (Thread/sleep live-likes-poll-ms)
+            (when (zero? (mod ticks 40))
+              (dsse/send-event! sse "likes-heartbeat" ["{}"]))
+            (recur version (inc ticks)))))))))
+
 (defn now-stream [request]
   (->sse-response
    request
@@ -744,6 +1158,7 @@ code, .mono {
    ["/notes" {:get notes-page}]
    ["/contact" {:get contact-page}]
    ["/favicon.ico" {:get favicon}]
+   ["/streams/bluesky-likes" {:get live-likes-stream}]
    ["/streams/now" {:get now-stream}]])
 
 (def app
@@ -753,6 +1168,7 @@ code, .mono {
 (defonce !server (atom nil))
 
 (defn stop! []
+  (stop-live-likes!)
   (when-let [server @!server]
     (http-kit/server-stop! server)
     (reset! !server nil)))
