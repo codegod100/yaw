@@ -307,10 +307,15 @@ a {
   align-items: start;
 }
 
+.notes-grid + .hero {
+  margin-top: 1.9rem;
+}
+
 .hero-card, .aside-card, .feature, .footer-box, .stream-box, .quote-box {
   border: 3px solid var(--edge);
   background: var(--panel);
   box-shadow: 0.45rem 0.45rem 0 0 var(--edge);
+  min-width: 0;
 }
 
 .hero-card {
@@ -411,11 +416,15 @@ h1 {
   backdrop-filter: blur(0);
 }
 
+.hero, .stream-section, .notes-grid, .features, .footer-grid, .feed-grid {
+  padding-bottom: 0.55rem;
+}
+
 .stream-section, .notes-grid, .footer-grid, .feed-grid {
-  margin-top: 1.6rem;
   display: grid;
   grid-template-columns: minmax(0, 1.65fr) minmax(17rem, 0.55fr);
   gap: 1.2rem;
+  margin-top: 1.6rem;
 }
 
 .stream-box, .footer-box {
@@ -567,7 +576,6 @@ code, .mono {
     grid-template-columns: 1fr;
   }
 }
-
 .section-title {
   margin: 0 0 0.35rem;
   font-size: 2rem;
@@ -585,13 +593,25 @@ code, .mono {
   text-transform: uppercase;
 }
 
+@media (max-width: 980px) {
+  .hero, .stream-section, .notes-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 900px) {
+  .features, .footer-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 840px) {
   .hero, .stream-section, .features, .footer-grid, .notes-grid, .feed-grid {
     grid-template-columns: 1fr;
   }
 
   .page {
-    width: min(100vw - 1rem, 1080px);
+    width: min(calc(100vw - 2rem), 1080px);
   }
 
   h1 {
