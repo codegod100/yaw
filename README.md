@@ -1,11 +1,11 @@
 # Yaw
 
-Small Datastar + Clojure site scaffolded for `devenv`.
+Small Datastar + Gleam site scaffolded for `devenv`.
 
 ## Run
 
 ```bash
-devenv shell -- clojure -M -m yaw.core
+devenv shell -- gleam run
 ```
 
 Then open `http://localhost:8080`.
@@ -30,7 +30,9 @@ tailscale serve reset
 
 ## Notes
 
-- Backend: `http-kit` + `reitit`
-- HTML: `hiccup`
-- Datastar SSE adapter: official `starfederation/datastar-clojure` repo, pinned to commit `aed8ce2` (`v1.0.0-RC8`)
+- Backend: `mist`
+- HTML: server-rendered string templates
+- Live updates: `datastar_gleam` over Mist SSE
+- Reference docs: `https://datastar-gleam.hexdocs.pm/`
 - Visual direction: black on yellow, inspired by `tonsky.me`
+- The previous Clojure implementation is still in `src/yaw/core.clj` as a reference while the repo finishes its migration.

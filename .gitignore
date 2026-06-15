@@ -1,3 +1,8 @@
 .cpcache/
 .devenv/
 .git-real/
+build/
+.preview.log
+.screens/
+.env
+--full-page

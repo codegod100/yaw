@@ -2,27 +2,23 @@
 
 {
   packages = with pkgs; [
-    clojure
-    jj
-    jdk21
-    rlwrap
+    erlang
+    gleam
+    rebar3
     tailscale
   ];
 
-  env = {
-    JAVA_HOME = pkgs.jdk21;
-  };
-
   enterShell = ''
-    echo "java: $(java -version 2>&1 | head -n 1)"
-    echo "clojure: $(clojure -Sdescribe >/dev/null 2>&1 && echo ready || echo missing)"
+    echo "gleam: $(gleam --version)"
+    echo "erlang: $(erl -eval 'io:format(\"~s\", [erlang:system_info(otp_release)]), halt().' -noshell)"
+    echo "rebar3: $(rebar3 version | head -n 1)"
     echo "tailscale: $(tailscale version 2>/dev/null | head -n 1 || echo missing)"
-    echo "run: devenv shell -- clojure -M -m yaw.core"
+    echo "run: devenv shell -- gleam run"
     echo "serve: devenv shell -- serve"
   '';
 
   scripts.dev.exec = ''
-    clojure -M -m yaw.core
+    gleam run
   '';
 
   scripts.serve.exec = ''
@@ -37,19 +33,15 @@
     echo "tailscale serve forwarding Tailnet HTTP traffic to http://127.0.0.1:$port"
     echo "inspect with: tailscale serve status"
 
-    clojure -M -m yaw.core
+    PORT=$port gleam run
   '';
 
   processes.yaw.exec = ''
     serve
   '';
 
-  scripts.repl.exec = ''
-    rlwrap clojure -M:repl
-  '';
-
   enterTest = ''
-    java -version >/dev/null
-    clojure -Sdescribe >/dev/null
+    gleam --version >/dev/null
+    erl -eval 'halt().' -noshell
   '';
 }
