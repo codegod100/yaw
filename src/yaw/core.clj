@@ -307,6 +307,7 @@ a {
 }
 
 .hero-card, .aside-card, .feature, .footer-box, .stream-box, .quote-box {
+  min-width: 0;
   border: 3px solid var(--edge);
   background: var(--panel);
   box-shadow: 0.45rem 0.45rem 0 0 var(--edge);
@@ -391,7 +392,7 @@ h1 {
 
 .features {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
   gap: 1rem;
   margin-top: 1.5rem;
 }
@@ -441,6 +442,7 @@ h1 {
 code, .mono {
   font-family: Berkeley Mono, JetBrains Mono, SFMono-Regular, monospace;
   font-size: 0.95em;
+  overflow-wrap: anywhere;
 }
 
 .notes-list {
@@ -470,6 +472,7 @@ code, .mono {
   justify-content: space-between;
   gap: 0.75rem;
   align-items: baseline;
+  flex-wrap: wrap;
   font-family: Avenir Next Condensed, Franklin Gothic Medium, Arial Narrow, sans-serif;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -501,6 +504,7 @@ code, .mono {
   justify-content: space-between;
   gap: 0.75rem;
   align-items: baseline;
+  flex-wrap: wrap;
   font-family: Avenir Next Condensed, Franklin Gothic Medium, Arial Narrow, sans-serif;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -557,7 +561,7 @@ code, .mono {
   grid-template-columns: minmax(0, 1.2fr) minmax(16rem, 0.85fr);
 }
 
-@media (max-width: 1180px) {
+@media (max-width: 1320px) {
   .hero, .stream-section, .notes-grid {
     grid-template-columns: 1fr;
   }
@@ -580,8 +584,8 @@ code, .mono {
   text-transform: uppercase;
 }
 
-@media (max-width: 840px) {
-  .hero, .stream-section, .features, .footer-grid, .notes-grid {
+@media (max-width: 980px) {
+  .hero, .stream-section, .footer-grid, .notes-grid {
     grid-template-columns: 1fr;
   }
 
