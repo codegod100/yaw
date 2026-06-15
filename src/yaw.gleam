@@ -157,10 +157,6 @@ a {
   align-items: start;
 }
 
-.notes-grid + .hero {
-  margin-top: 1.9rem;
-}
-
 .hero-card, .aside-card, .feature, .footer-box, .stream-box, .quote-box {
   border: 3px solid var(--edge);
   background: var(--panel);
@@ -245,22 +241,24 @@ h1 {
   color: var(--muted);
 }
 
-.hero, .stream-section, .notes-grid, .features, .footer-grid {
-  padding-bottom: 0.55rem;
+.hero, .stream-section, .notes-grid, .features, .footer-grid, .feed-grid {
+  padding-bottom: 0.8rem;
+}
+
+.page > section + section {
+  margin-top: 1.6rem;
 }
 
 .stream-section, .notes-grid, .footer-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.15fr) minmax(16rem, 0.85fr);
   gap: 1rem;
-  margin-top: 1.6rem;
 }
 
 .features {
   display: grid;
   gap: 1rem;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  margin-top: 1.6rem;
 }
 
 .feature {
@@ -317,8 +315,6 @@ h1 {
   display: grid;
   grid-template-columns: minmax(0, 2.2fr) minmax(15rem, 0.42fr);
   gap: 1rem;
-  margin-top: 1.6rem;
-  padding-bottom: 0.55rem;
 }
 
 .notes-list {
