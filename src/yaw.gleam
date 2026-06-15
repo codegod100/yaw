@@ -437,6 +437,78 @@ window.yawNow = (function () {
 }());
 "
 
+const bluesky_controller_script = "
+window.yawBluesky = (function () {
+  function escapeHtml(text) {
+    return String(text)
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('\"', '&quot;')
+      .replaceAll(\"'\", '&#39;');
+  }
+
+  function formatTimestamp(value) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value || 'recent';
+    return new Intl.DateTimeFormat(navigator.language, {
+      dateStyle: 'medium',
+      timeStyle: 'short'
+    }).format(date);
+  }
+
+  function postUrl(handle, uri) {
+    const parts = String(uri || '').split('/');
+    if (parts.length === 5 && parts[3] === 'app.bsky.feed.post') {
+      return `https://bsky.app/profile/${handle}/post/${parts[4]}`;
+    }
+    return null;
+  }
+
+  function renderPost(post, fallbackHandle, fallbackName) {
+    const handle = post && post.post && post.post.author ? (post.post.author.handle || fallbackHandle) : fallbackHandle;
+    const author = post && post.post && post.post.author ? (post.post.author.displayName || fallbackName || handle || 'Bluesky') : (fallbackName || handle || 'Bluesky');
+    const text = post && post.post && post.post.record ? (post.post.record.text || '') : '';
+    const indexedAt = post && post.post ? (post.post.indexedAt || (post.post.record ? post.post.record.createdAt || '' : '')) : '';
+    const uri = post && post.post ? (post.post.uri || '') : '';
+    const url = postUrl(handle, uri);
+    return `<article class=\"bsky-post\"><div class=\"bsky-meta\"><strong>${escapeHtml(author)}</strong><time class=\"muted\">${escapeHtml(formatTimestamp(indexedAt))}</time></div><p>${escapeHtml(text)}</p>${url ? `<p><a class=\"mono\" href=\"${escapeHtml(url)}\" target=\"_blank\" rel=\"noreferrer\">Open on Bluesky</a></p>` : ''}</article>`;
+  }
+
+  async function load() {
+    const root = document.querySelector('[data-bsky-feed]');
+    if (!root) return;
+    const handle = root.getAttribute('data-handle');
+    if (!handle) return;
+
+    const list = document.getElementById('bsky-post-list');
+    const handleNode = document.getElementById('bsky-handle');
+    if (handleNode) handleNode.textContent = handle;
+
+    try {
+      const [profileRes, feedRes] = await Promise.all([
+        fetch(`https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile?actor=${encodeURIComponent(handle)}`),
+        fetch(`https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed?actor=${encodeURIComponent(handle)}&limit=4`)
+      ]);
+      const profile = profileRes.ok ? await profileRes.json() : {};
+      const feed = feedRes.ok ? await feedRes.json() : {};
+      const shownHandle = profile.handle || handle;
+      const displayName = profile.displayName || '';
+      if (handleNode) handleNode.textContent = shownHandle;
+      const posts = Array.isArray(feed.feed) ? feed.feed : [];
+      list.innerHTML = posts.length
+        ? `<div class=\"bsky-list\">${posts.map(post => renderPost(post, shownHandle, displayName)).join('')}</div>`
+        : '<p class=\"muted\">No recent posts found.</p>';
+    } catch (_error) {
+      list.innerHTML = '<p class=\"muted\">Unable to load Bluesky posts right now.</p>';
+    }
+  }
+
+  window.addEventListener('DOMContentLoaded', load);
+  return { load };
+}());
+"
+
 type NowMessage {
   PushLine(Int)
 }
@@ -529,6 +601,8 @@ fn layout(active: String, sections: List(String)) -> String {
   <> styles
   <> "</style><script>"
   <> now_controller_script
+  <> "</script><script>"
+  <> bluesky_controller_script
   <> "</script><script type=\"module\" src=\"https://cdn.jsdelivr.net/gh/starfederation/datastar@1.0.2/bundles/datastar.js\"></script></head><body><main class=\"page\"><header class=\"masthead\"><div>Nandi</div><nav>"
   <> nav_link(active, "/", "Home")
   <> nav_link(active, "/work", "Work")
@@ -576,17 +650,12 @@ fn bluesky_section() -> String {
   case bluesky_handle() {
     None ->
       "<section class=\"feed-grid\"><article class=\"footer-box\"><div class=\"eyebrow\">Bluesky</div><h2 class=\"section-title\">Recent posts</h2><p class=\"muted\">Set AT_HANDLE in .env to show recent Bluesky posts.</p></article><aside class=\"footer-box\"><div class=\"eyebrow\">Handle</div><p class=\"mono\">AT_HANDLE not set</p><p>Posts are fetched server-side from the public Bluesky API and cached briefly to keep page loads predictable.</p></aside></section>"
-    Some(handle) -> {
-      let profile = fetch_bsky_profile(handle)
-      let posts = fetch_bsky_posts(handle)
-      let shown_handle = profile.handle
-      let display_name = profile.display_name
-      "<section class=\"feed-grid\"><article class=\"footer-box\"><div class=\"eyebrow\">Bluesky</div><h2 class=\"section-title\">Recent posts</h2>"
-      <> render_bsky_posts(posts, display_name)
-      <> "</article><aside class=\"footer-box\"><div class=\"eyebrow\">Handle</div><p class=\"mono\">"
-      <> escape_html(shown_handle)
-      <> "</p><p>Posts are fetched server-side from the public Bluesky API and cached briefly to keep page loads predictable.</p></aside></section>"
-    }
+    Some(handle) ->
+      "<section class=\"feed-grid\" data-bsky-feed data-handle=\""
+      <> escape_html(handle)
+      <> "\"><article class=\"footer-box\"><div class=\"eyebrow\">Bluesky</div><h2 class=\"section-title\">Recent posts</h2><div id=\"bsky-post-list\"><p class=\"muted\">Loading recent posts...</p></div></article><aside class=\"footer-box\"><div class=\"eyebrow\">Handle</div><p class=\"mono\" id=\"bsky-handle\">"
+      <> escape_html(handle)
+      <> "</p><p>Posts load from the public Bluesky API in your browser, so timestamps use your local time automatically.</p></aside></section>"
   }
 }
 
@@ -633,7 +702,9 @@ fn render_bsky_post_list(
       let post_link = bsky_post_url(handle, uri)
       "<article class=\"bsky-post\"><div class=\"bsky-meta\"><strong>"
       <> escape_html(first_non_empty(author, handle))
-      <> "</strong><time class=\"muted\">"
+      <> "</strong><time class=\"muted\" data-local-timestamp=\"true\" datetime=\""
+      <> escape_html(first_non_empty(indexed_at, ""))
+      <> "\">"
       <> escape_html(first_non_empty(indexed_at, "recent"))
       <> "</time></div><p>"
       <> escape_html(text)

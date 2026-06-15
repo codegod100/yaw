@@ -1059,7 +1059,7 @@ code, .mono {
             [:div.bsky-meta
              [:strong (or display-name handle)]
              [:time.muted {:datetime indexed-at
-                          :data-local-timestamp ""}
+                           :data-local-timestamp "true"}
               (or indexed-at "recent")]]
             [:p text]
             (when (seq images)
@@ -1164,7 +1164,7 @@ code, .mono {
 
 (defn local-timestamp [instant]
   [:time {:datetime (str instant)
-          :data-local-timestamp ""}
+          :data-local-timestamp "true"}
    (str instant)])
 
 (defn live-likes-stream [request]
